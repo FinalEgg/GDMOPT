@@ -1,7 +1,7 @@
 import gym
 from gym.spaces import Box, Discrete
 from tianshou.env import DummyVectorEnv
-from .utility import CompUtility
+from env.utility import CompUtility
 import numpy as np
 
 class AIGCEnv(gym.Env):
