@@ -16,3 +16,9 @@ P_G=10
 
 threshold = 0.01
 white_noise = 1
+
+LOS=2   #D^-2
+NLOS=4  #D^-4
+
+xi1=0.6
+xi2=2

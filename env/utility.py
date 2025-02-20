@@ -41,12 +41,10 @@ def split(action,state):
     for i in range(n_g):    # ith G_AP
         p_tot[i] = action[i*(1+n_u+n_a)]    # total power allocation
         for j in range(n_u):
-            distance = np.sqrt((x_g[i] - x_u[j])**2 + (y_g[i] - y_u[j])**2)
-            G_beta[i, j] = distance ** -2  # 距离倒数的平方
+            G_beta[i, j] = compute_beta(x_g[i], y_g[i], 0, x_u[j], y_u[j])
             G_eta[i, j] = action[i*(n_u+n_a+1)+1+j]
         for j in range(n_a):
-            distance = np.sqrt((x_g[i] - x_a[j])**2 + (y_g[i] - y_a[j])**2 + h_a[j]**2)
-            G_beta[i, n_u+j] = distance ** -2  # 距离倒数的平方
+            G_beta[i, n_u+j] = compute_beta(x_g[i], y_g[i], h_a[j], x_a[j], y_a[j])
             G_eta[i,n_u+j] = action[i*(n_u+n_a+1)+1+n_u+j]
 
     # UAV 
@@ -55,10 +53,12 @@ def split(action,state):
     for i in range(n_a):
         p_tot[n_g+i] = action[n_g*(n_a+n_u+1)+i*(1+n_u)]
         for j in range(n_u):
-            distance = np.sqrt((x_a[i] - x_u[j])**2 + (y_a[i] - y_u[j])**2 + h_a[i]**2)
-            A_beta[i, j] = distance ** -2  # 距离倒数的平方
+            A_beta[i, j] = compute_beta(x_a[i], y_a[i], h_a[i], x_u[j], y_u[j])
             A_eta[i,j]=action[n_g*(n_a+n_u+1)+i*(1+n_u)+1+j]
     
+    # UAV speed
+    speed = action[-n_a*3:]
+
     # normalization
     for i in range(G_eta.shape[0]):
         row_sum = 0
@@ -80,14 +80,34 @@ def split(action,state):
                 for j in range(A_eta.shape[1]):
                     A_eta[i, j] = A_eta[i, j] / row_sum
 
-    return G_beta, G_eta, A_beta, A_eta, p_tot
+    return G_beta, G_eta, A_beta, A_eta, p_tot, speed
+
+def compute_beta(x1, y1, h1, x2, y2):
+    xi1 = cnf.xi1
+    xi2 = cnf.xi2
+    alpha1 = cnf.LOS
+    alpha2 = cnf.NLOS
+
+    R = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    D = math.sqrt(R**2 + h1**2)
+
+    if R == 0:
+        theta = math.pi / 2
+    else:
+        theta = math.atan(h1 / R)
+    
+    P_L = 1.0 / (1.0 + xi1 * math.exp(-xi2 * (theta - xi1)))
+    P_NL = 1.0 - P_L
+
+    beta = P_L * (D ** (-alpha1)) + P_NL * (D ** (-alpha2))
+    return beta
 
 # Function to compute utility (reward) for the given state and action
 def CompUtility(State, Aution):
     weight = torch.from_numpy(np.array(Aution)).float()
     position = torch.from_numpy(np.array(State)).float()
     weight = torch.abs(weight)
-    G_beta, G_eta, A_beta, A_eta, p_tot = split(weight, position)
+    G_beta, G_eta, A_beta, A_eta, p_tot, speed = split(weight, position)
 
     G_c = np.zeros((n_g, n_a + n_u))
     noise=0
@@ -128,4 +148,4 @@ def CompUtility(State, Aution):
     expert_action = 0
     subopt_expert_action = 0
 
-    return reward, expert_action, subopt_expert_action, Aution
+    return reward, expert_action, subopt_expert_action, speed

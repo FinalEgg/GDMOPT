@@ -11,13 +11,14 @@ class AIGCEnv(gym.Env):
 
         self._flag = 0
         # Define observation space based on the shape of the state
-        # num_points = cnf.NUM_A_AP*3+cnf.NUM_G_AP*2+cnf.NUM_USERS*2
         self._observation_space = Box(shape=self.state.shape, low=0, high=1)
         # Define action space - discrete space with 3 possible actions
         num_links_a=cnf.NUM_A_AP*cnf.NUM_USERS
         num_links_g=cnf.NUM_G_AP*(cnf.NUM_USERS+cnf.NUM_A_AP)
-        num_links=num_links_a+num_links_g
-        self._action_space = Discrete(num_links+cnf.NUM_AP)
+        power = cnf.NUM_AP
+        speed = cnf.NUM_A_AP*3
+        act_dim=num_links_a + num_links_g + power +speed 
+        self._action_space = Discrete(act_dim)
         self._num_steps = 0
         self._terminated = False
         self._laststate = None
@@ -60,11 +61,12 @@ class AIGCEnv(gym.Env):
         assert not self._terminated, "One episodic has terminated"
         # Calculate reward based on last state and action taken
         reward, expert_action, sub_expert_action, real_action = CompUtility(self.position, action)
-
-        
-
         self._laststate[-1] = reward
-        self._laststate[0:-1] = self.position
+        new_position = self.position.copy()
+        new_position[0:cnf.NUM_A_AP] = np.minimum(new_position[0:cnf.NUM_A_AP] + real_action[0:cnf.NUM_A_AP], cnf.MAX_X)
+        new_position[cnf.NUM_A_AP:2*cnf.NUM_A_AP] = np.minimum(new_position[cnf.NUM_A_AP:2*cnf.NUM_A_AP] + real_action[cnf.NUM_A_AP:2*cnf.NUM_A_AP], cnf.MAX_Y)
+        new_position[2*cnf.NUM_A_AP:3*cnf.NUM_A_AP] = np.minimum(new_position[2*cnf.NUM_A_AP:3*cnf.NUM_A_AP] + real_action[2*cnf.NUM_A_AP:3*cnf.NUM_A_AP], cnf.MAX_H)
+        self._laststate[0:-1] = new_position
         self._num_steps += 1
         # Check if episode should end based on number of steps taken
         if self._num_steps >= self._steps_per_episode:
