@@ -1,8 +1,8 @@
 #edit
-NUM_G_AP = 2
-NUM_A_AP = 2
+NUM_G_AP = 10
+NUM_A_AP = 10
 NUM_AP = NUM_G_AP + NUM_A_AP
-NUM_USERS = 2
+NUM_USERS = 50
 MAX_X = 10
 MAX_Y = 10
 MAX_H = 5
@@ -14,5 +14,4 @@ NLOS=5
 P_A=4
 P_G=10
 
-threshold = 0.01
-white_noise = 1
+white_noise = 0.1

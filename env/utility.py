@@ -13,21 +13,18 @@ n_g = cnf.NUM_G_AP  # number of ground APs
 n_u = cnf.NUM_USERS # number of users
 
 def split(action,state):
-    #split state
-    idx = 0
-    x_a = state[idx:idx + n_a]  #x of aerial APs
-    idx += n_a
-    y_a = state[idx:idx + n_a]  #y of aerial APs
-    idx += n_a
-    h_a = state[idx:idx + n_a]  #h of aerial APs
-    idx += n_a
-    x_g = state[idx:idx + n_g]  #x of ground APs
-    idx += n_g
-    y_g = state[idx:idx + n_g]  #y of ground APs
-    idx += n_g
-    x_u = state[idx:idx + n_u]  #x of users
-    idx += n_u
-    y_u = state[idx:idx + n_u]  #y of users
+    action = action.detach().numpy() if torch.is_tensor(action) else np.array(action)
+    state = state.detach().numpy() if torch.is_tensor(state) else np.array(state)
+
+    # reshape state into structured array
+    aerial_state = state[:3*n_a].reshape(3, n_a)  # [x_a, y_a, h_a]
+    x_a, y_a, h_a = aerial_state
+    
+    ground_state = state[3*n_a:3*n_a + 2*n_g].reshape(2, n_g)  # [x_g, y_g]
+    x_g, y_g = ground_state
+    
+    user_state = state[3*n_a + 2*n_g:].reshape(2, n_u)  # [x_u, y_u]
+    x_u, y_u = user_state
 
     # action: 
     # n_g rows: 1 digit total power allocation, n_u digits for users, n_a digits for aerial APs
@@ -35,95 +32,82 @@ def split(action,state):
     
     p_tot=np.zeros(cnf.NUM_AP)  # total power allocation
 
-    # Ground AP
+    # Ground AP 
     G_beta = np.zeros((n_g, n_a + n_u))
     G_eta = np.zeros((n_g, n_a + n_u))
-    for i in range(n_g):    # ith G_AP
-        p_tot[i] = action[i*(1+n_u+n_a)]    # total power allocation
-        for j in range(n_u):
-            distance = np.sqrt((x_g[i] - x_u[j])**2 + (y_g[i] - y_u[j])**2)
-            G_beta[i, j] = distance ** -2  # 距离倒数的平方
-            G_eta[i, j] = action[i*(n_u+n_a+1)+1+j]
-        for j in range(n_a):
-            distance = np.sqrt((x_g[i] - x_a[j])**2 + (y_g[i] - y_a[j])**2 + h_a[j]**2)
-            G_beta[i, n_u+j] = distance ** -2  # 距离倒数的平方
-            G_eta[i,n_u+j] = action[i*(n_u+n_a+1)+1+n_u+j]
+    # G_beta: shape (n_g, n_a + n_u)
+    x_g_expanded = x_g[:, np.newaxis]  # 形状: (n_g, 1)
+    y_g_expanded = y_g[:, np.newaxis]  # 形状: (n_g, 1)
+    dist_to_users = np.sqrt((x_g_expanded - x_u)**2 + (y_g_expanded - y_u)**2)
+    G_beta[:, :n_u] = dist_to_users ** -2
+    dist_to_aerial = np.sqrt(
+        (x_g_expanded - x_a)**2 + 
+        (y_g_expanded - y_a)**2 + 
+        h_a**2
+    )
+    G_beta[:, n_u:] = dist_to_aerial ** -2
 
-    # UAV 
+    # Aerial AP
     A_beta = np.zeros((n_a, n_u))
     A_eta = np.zeros((n_a, n_u))
-    for i in range(n_a):
-        p_tot[n_g+i] = action[n_g*(n_a+n_u+1)+i*(1+n_u)]
-        for j in range(n_u):
-            distance = np.sqrt((x_a[i] - x_u[j])**2 + (y_a[i] - y_u[j])**2 + h_a[i]**2)
-            A_beta[i, j] = distance ** -2  # 距离倒数的平方
-            A_eta[i,j]=action[n_g*(n_a+n_u+1)+i*(1+n_u)+1+j]
+    # A_beta: shape (n_a, n_u)
+    x_a_expanded = x_a[:, np.newaxis]  # 形状: (n_a, 1)
+    y_a_expanded = y_a[:, np.newaxis]  # 形状: (n_a, 1)
+    h_a_expanded = h_a[:, np.newaxis]  # 形状: (n_a, 1)
+    distances = np.sqrt(
+        (x_a_expanded - x_u)**2 + 
+        (y_a_expanded - y_u)**2 + 
+        h_a_expanded**2
+    )
+    A_beta = distances ** -2
     
-    # normalization
-    for i in range(G_eta.shape[0]):
-        row_sum = 0
-        for j in range(G_eta.shape[1]):
-            if G_eta[i, j] < cnf.threshold:
-                G_eta[i, j] = 0  
-            row_sum += G_eta[i, j]
-        if row_sum != 0:
-            for j in range(G_eta.shape[1]):
-                G_eta[i, j] = G_eta[i, j] / row_sum
+    start = n_g*(n_u+n_a)
+    # G_eta
+    action_g = action[:start].reshape(n_g, -1)  # 重塑为(n_g, n_u+n_a)
+    G_eta = action_g  
+    
+    # A_eta
+    action_a = action[start:].reshape(n_a, -1)  # 重塑为(n_a, n_u+1)
+    A_eta = action_a  # 去掉每行的第一个元素(原来的总功率分配)
 
-    for i in range(A_eta.shape[0]):
-            row_sum = 0
-            for j in range(A_eta.shape[1]):
-                if A_eta[i, j] < cnf.threshold:
-                    A_eta[i, j] = 0
-                row_sum += A_eta[i, j]
-            if row_sum != 0:
-                for j in range(A_eta.shape[1]):
-                    A_eta[i, j] = A_eta[i, j] / row_sum
+    # normalization using numpy operations
+    # G_eta
+    row_sums_g = np.sum(G_eta, axis=1, keepdims=True)  
+    mask_g = row_sums_g != 0  
+    G_eta = np.where(mask_g, G_eta / row_sums_g, G_eta) 
 
-    return G_beta, G_eta, A_beta, A_eta, p_tot
+    # A_eta
+    row_sums_a = np.sum(A_eta, axis=1, keepdims=True) 
+    mask_a = row_sums_a != 0  
+    A_eta = np.where(mask_a, A_eta / row_sums_a, A_eta)  
+
+    return G_beta, G_eta, A_beta, A_eta
 
 # Function to compute utility (reward) for the given state and action
 def CompUtility(State, Aution):
-    weight = torch.from_numpy(np.array(Aution)).float()
-    position = torch.from_numpy(np.array(State)).float()
-    weight = torch.abs(weight)
-    G_beta, G_eta, A_beta, A_eta, p_tot = split(weight, position)
-
+    G_beta, G_eta, A_beta, A_eta = split(Aution, State)
+     # 计算地面AP的信道容量
     G_c = np.zeros((n_g, n_a + n_u))
-    noise=0
-    signal=0
-    for i in range(G_beta.shape[1]): #ith user
-        for j in range(G_beta.shape[0]): #jth AP
-            signal = signal + cnf.P_G*p_tot[j]*G_beta[j,i]*G_eta[j,i]
-            noise = noise+ cnf.P_G*p_tot[j]*G_beta[j,i]*G_eta[j,i]
-        G_c[j,i] = np.log2(1+signal/(noise+cnf.white_noise))
+    for i in range(n_u + n_a):  
+        noise_coef = np.sum(G_eta[:, [j for j in range(n_u+n_a) if j != i]], axis=1)  # shape: (n_g,)
+        tot_noise = np.sum(noise_coef * cnf.P_G * G_beta[:, i])
+        signal = np.sum(cnf.P_G * G_beta[:, i] * G_eta[:, i])
+        G_c[:, i] = np.log2(1 + signal / (tot_noise + cnf.white_noise))
 
+    # 计算空中AP的信道容量
     A_c = np.zeros((n_a, n_u))
-    noise=0
-    signal=0
-    for i in range(A_beta.shape[1]): #ith user
-        for j in range(A_beta.shape[0]):
-            signal = signal + cnf.P_A*p_tot[j]*A_beta[j,i]*A_eta[j,i]
-            noise = noise+ cnf.P_A*p_tot[j]*A_beta[j,i]*A_eta[j,i]
-    A_c[j,i] = np.log2(1+signal/(noise+cnf.white_noise))
+    for i in range(n_u):  
+        noise_coef = np.sum(A_eta[:, [j for j in range(n_u) if j != i]], axis=1)  # shape: (n_a,)
+        tot_noise = np.sum(noise_coef * cnf.P_A * A_beta[:, i])
+        signal = np.sum(cnf.P_A * A_beta[:, i] * A_eta[:, i])
+        A_c[:, i] = np.log2(1 + signal / (tot_noise + cnf.white_noise))
 
-    # 无人机信道容量超出限制问题应当使用惩罚项解决
-    # for i in range(n_u,n_u+n_a): #ap in G_c
-    #     front_haul=0
-    #     for j in range(n_g): # jth G in G_c
-    #         front_haul = front_haul + cnf.P_G*p_tot[j]*G_beta[j,i]
-    #     capacity[i-n_u+n_g,j] = min(front_haul,A_c[i-n_u,j])
 
-    capacity =np.zeros((cnf.NUM_AP, n_u))
-    for j in range(n_u):
-        for i in range(n_g):
-            capacity[i,j] = G_c[i,j]
-        for i in range(n_a):
-            capacity[i+n_g,j] = A_c[i,j]
-    
-    # 计算总信道容量
-    total_channel_capacity = np.sum(capacity)
-    reward = total_channel_capacity 
+    # 合并地面AP和空中AP的信道容量
+    capacity = np.zeros((cnf.NUM_AP, n_u))
+    capacity[:n_g, :] = G_c[:, :n_u]  # 地面AP的容量
+    capacity[n_g:, :] = A_c[:, :n_u]  # 空中AP的容量
+    reward = np.sum(capacity)
 
     expert_action = 0
     subopt_expert_action = 0

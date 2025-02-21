@@ -17,7 +17,7 @@ class AIGCEnv(gym.Env):
         num_links_a=cnf.NUM_A_AP*cnf.NUM_USERS
         num_links_g=cnf.NUM_G_AP*(cnf.NUM_USERS+cnf.NUM_A_AP)
         num_links=num_links_a+num_links_g
-        self._action_space = Discrete(num_links+cnf.NUM_AP)
+        self._action_space = Discrete(num_links)
         self._num_steps = 0
         self._terminated = False
         self._laststate = None
