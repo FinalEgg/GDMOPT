@@ -13,8 +13,10 @@ from .helpers import (
 )
 from .utils import Progress, Silent
 
+
 # Define the main Diffusion class that inherits from PyTorch's nn.Module
 class Diffusion(nn.Module):
+    
     def __init__(self, state_dim, action_dim, model, max_action,
                  beta_schedule='vp', n_timesteps=5,
                  loss_type='l2', clip_denoised=True, bc_coef=False):
@@ -26,6 +28,7 @@ class Diffusion(nn.Module):
         self.action_dim = action_dim
         self.max_action = max_action
         self.model = model
+        self.sigmoid_expand = 1
 
         # Define the diffusion beta schedule
         if beta_schedule == 'linear':
@@ -108,7 +111,7 @@ class Diffusion(nn.Module):
         x_recon = self.predict_start_from_noise(x, t=t, noise=self.model(x, t, s))
 
         if self.clip_denoised:
-            x_recon=self.max_action * F.relu(torch.tanh(x_recon))   #edited
+            x_recon = torch.sigmoid(x_recon/self.sigmoid_expand) * self.max_action   #edited
         else:
             assert RuntimeError()
 
@@ -175,7 +178,7 @@ class Diffusion(nn.Module):
         shape = (batch_size, self.action_dim)
         action = self.p_sample_loop(state, shape, *args, **kwargs)
         # Clamping the actions to be between -max_action and max_action
-        return self.max_action * F.relu(torch.tanh(action)) #edited
+        return torch.sigmoid(action/self.sigmoid_expand) * self.max_action #edited
         # return action
 
     # ------------------------------------------ training ------------------------------------------#

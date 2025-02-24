@@ -1,17 +1,30 @@
 #edit
-NUM_G_AP = 10
+NUM_G_AP = 5
 NUM_A_AP = 10
 NUM_AP = NUM_G_AP + NUM_A_AP
-NUM_USERS = 50
-MAX_X = 10
-MAX_Y = 10
-MAX_H = 5
+NUM_USERS = 20
 
-C_COM=1
-LOS=10
-NLOS=5
+MAX_X = 100
+MAX_Y = 100
+MAX_H = 50
 
-P_A=4
-P_G=10
+MAX_V_X = 5
+MAX_V_Y = 5
+MAX_V_H = 2
 
+LOS=-1
+NLOS=-2
+LOS_COEF1 = 1
+LOS_COEF2 = 1
+
+P_A=40
+P_G=100
 white_noise = 0.1
+
+MAJOR_PUNISHMENT = 10
+MINOR_PUNISHMENT = 2
+LINK_COST = 0.05
+min_capacity = 0.5
+
+sigmoid_expand = 1
+

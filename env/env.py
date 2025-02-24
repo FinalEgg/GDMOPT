@@ -11,13 +11,13 @@ class AIGCEnv(gym.Env):
 
         self._flag = 0
         # Define observation space based on the shape of the state
-        # num_points = cnf.NUM_A_AP*3+cnf.NUM_G_AP*2+cnf.NUM_USERS*2
         self._observation_space = Box(shape=self.state.shape, low=0, high=1)
         # Define action space - discrete space with 3 possible actions
         num_links_a=cnf.NUM_A_AP*cnf.NUM_USERS
         num_links_g=cnf.NUM_G_AP*(cnf.NUM_USERS+cnf.NUM_A_AP)
         num_links=num_links_a+num_links_g
-        self._action_space = Discrete(num_links)
+        move = cnf.NUM_A_AP*3
+        self._action_space = Discrete(move + num_links)
         self._num_steps = 0
         self._terminated = False
         self._laststate = None
@@ -46,12 +46,16 @@ class AIGCEnv(gym.Env):
         y_g = np.random.uniform(0, cnf.MAX_Y, cnf.NUM_G_AP)
         x_u = np.random.uniform(0, cnf.MAX_X, cnf.NUM_USERS)
         y_u = np.random.uniform(0, cnf.MAX_Y, cnf.NUM_USERS)
+        num_links_a=cnf.NUM_A_AP*cnf.NUM_USERS
+        num_links_g=cnf.NUM_G_AP*(cnf.NUM_USERS+cnf.NUM_A_AP)
+        num_links=num_links_a+num_links_g
+        p_alloc = np.random.uniform(0, 1, num_links)
 
         reward_in = []
         reward_in.append(0)
-        states = np.concatenate([x_a, y_a, h_a, x_g, y_g, x_u, y_u, reward_in])
+        states = np.concatenate([x_a, y_a, h_a, x_g, y_g, x_u, y_u, p_alloc, reward_in])
 
-        self.position = np.concatenate([x_a, y_a, h_a, x_g, y_g, x_u, y_u]) 
+        self.position = np.concatenate([x_a, y_a, h_a, x_g, y_g, x_u, y_u, p_alloc]) 
         self._laststate = states
         return states
 
@@ -60,11 +64,13 @@ class AIGCEnv(gym.Env):
         assert not self._terminated, "One episodic has terminated"
         # Calculate reward based on last state and action taken
         reward, expert_action, sub_expert_action, real_action = CompUtility(self.position, action)
-
+        # action: 3*NUM_A_AP bits for moving, NUM_LNIKS bits for power allocation
         
-
+        start1=cnf.NUM_A_AP*3
+        start2=cnf.NUM_A_AP*3+cnf.NUM_G_AP*2+cnf.NUM_USERS*2
         self._laststate[-1] = reward
-        self._laststate[0:-1] = self.position
+        self._laststate[:start1] = self._laststate[:start1] + real_action[:start1]
+        self._laststate[start2:-1]=real_action[start1:]
         self._num_steps += 1
         # Check if episode should end based on number of steps taken
         if self._num_steps >= self._steps_per_episode:

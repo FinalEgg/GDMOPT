@@ -29,8 +29,8 @@ def get_args():
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--buffer-size', type=int, default=1e6)#1e6
     parser.add_argument('-e', '--epoch', type=int, default=1e3)# 1000
-    parser.add_argument('--step-per-epoch', type=int, default=1)# 100
-    parser.add_argument('--step-per-collect', type=int, default=1)#1000
+    parser.add_argument('--step-per-epoch', type=int, default=3)# 100
+    parser.add_argument('--step-per-collect', type=int, default=5)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=1)
