@@ -7,27 +7,60 @@ from scipy.io import savemat
 import os
 from env import config as cnf
 import networkx as nx
+import math
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 n_a = cnf.NUM_A_AP  # number of aerial APs
 n_g = cnf.NUM_G_AP  # number of ground APs
 n_u = cnf.NUM_USERS # number of users
 
-def split(action,state):
-    action = action.detach().numpy() if torch.is_tensor(action) else np.array(action)
-    state = state.detach().numpy() if torch.is_tensor(state) else np.array(state)
-
-    action = np.where(action < 0.5, 0, 2*(action - 0.5))
-
-    # reshape state into structured array
-    aerial_state = state[:3*n_a].reshape(3, n_a)  # [x_a, y_a, h_a]
-    x_a, y_a, h_a = aerial_state
+def map(state, aution):
+    """
+    预处理State和Aution
+    - state前面 [3*cnf.NUM_A_AP + 2*cnf.NUM_G_AP + 2*cnf.NUM_USERS] 位为位置信息，后面为 power_alloc_state
+    - aution前面 NUM_A_AP*3 位为速度信息，需要映射到实际速度；后面为 power_alloc_action，需要映射到 [0,1]
+    """
+    import numpy as np
+    # 确保输入为 numpy 数组
+    state = np.array(state)
+    aution = np.array(aution)
     
-    ground_state = state[3*n_a:3*n_a + 2*n_g].reshape(2, n_g)  # [x_g, y_g]
-    x_g, y_g = ground_state
+    # 拆分 state
+    pos_len = 3 * cnf.NUM_A_AP + 2 * cnf.NUM_G_AP + 2 * cnf.NUM_USERS
+    position = state[:pos_len]
+    power_alloc_state = state[pos_len:]
     
-    user_state = state[3*n_a + 2*n_g:].reshape(2, n_u)  # [x_u, y_u]
-    x_u, y_u = user_state
+    # 拆分 aution
+    move_num = cnf.NUM_A_AP * 3
+    move = aution[:move_num]
+    power_alloc_action = aution[move_num:]
+    
+    # 映射 move 到实际速度，参考 CompUtility 开头部分
+    scales = np.array([cnf.MAX_V_X] * cnf.NUM_A_AP +
+                      [cnf.MAX_V_Y] * cnf.NUM_A_AP +
+                      [cnf.MAX_V_H] * cnf.NUM_A_AP)
+    move_mapped = move * scales
+    
+    # 将 power_alloc_action 映射到 [0,1]，参考 split 函数开头处理方法
+    power_alloc_action_mapped = np.clip(power_alloc_action, 0, 1)
+    
+    return position, power_alloc_state, move_mapped, power_alloc_action_mapped
+
+def split(power_alloc,position):
+    # 函数传入的power_alloc是功率分配，[-1,1]
+    # 函数传入的position只有位置信息，已经经过放大映射
+    power_alloc = power_alloc.detach().numpy() if torch.is_tensor(power_alloc) else np.array(power_alloc)
+    position = position.detach().numpy() if torch.is_tensor(position) else np.array(position)
+
+    # reshape position into structured array
+    aerial_position = position[:3*n_a].reshape(3, n_a)  # [x_a, y_a, h_a]
+    x_a, y_a, h_a = aerial_position
+    
+    ground_position = position[3*n_a:3*n_a + 2*n_g].reshape(2, n_g)  # [x_g, y_g]
+    x_g, y_g = ground_position
+    
+    user_position = position[3*n_a + 2*n_g: 3*n_a + 2*n_g + 2* n_u].reshape(2, n_u)  # [x_u, y_u]
+    x_u, y_u = user_position
 
     def calc_beta(x1, y1, x2, y2, h2):
         hor_dist = np.sqrt((x1 - x2)**2 + (y1 - y2)**2)
@@ -37,7 +70,7 @@ def split(action,state):
         return prob*dist**cnf.LOS+(1-prob)*dist**cnf.NLOS
 
 
-    # action: 
+    # power_alloc: 
     # n_g rows: n_u digits for users, n_a digits for aerial APs
     # n_a rows: n_u digits for users
     
@@ -63,33 +96,35 @@ def split(action,state):
     start = n_g*(n_u+n_a)
 
     # G_eta
-    action_g = action[:start].reshape(n_g, -1)  # 重塑为(n_g, n_u+n_a)
-    G_eta = action_g  
-    
+    G_eta = power_alloc[:start].reshape(n_g, -1)  # 重塑为(n_g, n_u+n_a) 
     # A_eta
-    action_a = action[start:].reshape(n_a, -1)  # 重塑为(n_a, n_u)
-    A_eta = action_a  
+    A_eta = power_alloc[start:].reshape(n_a, -1)  # 重塑为(n_a, n_u)  
 
-    # normalization using numpy operations
-    # G_eta
-    row_sums_g = np.sum(G_eta, axis=1, keepdims=True)  
-    mask_g = row_sums_g != 0  
-    G_eta = np.where(mask_g, G_eta / row_sums_g, G_eta) 
+    # 对 G_eta 每一行进行归一化(总和大于1时归一化，总和小于1时保持不变，0始终是0)
+    for i in range(G_eta.shape[0]):
+        row_sum = np.sum(G_eta[i])
+        if row_sum > 1:
+            G_eta[i] = G_eta[i] / row_sum
 
-    # A_eta
-    row_sums_a = np.sum(A_eta, axis=1, keepdims=True) 
-    mask_a = row_sums_a != 0  
-    A_eta = np.where(mask_a, A_eta / row_sums_a, A_eta)  
+    # 对 A_eta 每一行进行归一化(总和大于1时归一化，总和小于1时保持不变，0始终是0)
+    for i in range(A_eta.shape[0]):
+        row_sum = np.sum(A_eta[i])
+        if row_sum > 1:
+            A_eta[i] = A_eta[i] / row_sum
 
     return G_beta, G_eta, A_beta, A_eta
 
-def CompPunishment(A_c,G_c):
+def CompPunishment(A_c,G_c,A_eta,G_eta):
     # punished when uav has too little chanel capacity
     # punished when the uav's capacity of user is lesser than the capacity of ground ap
     punishment = 0
-    major_punish_coef = -cnf.MAJOR_PUNISHMENT
-    minor_punish_coef = -cnf.MINOR_PUNISHMENT
+    overload_punish_coef = -cnf.OVER_LOAD_PUNISHMENT
+    low_channel_punishment = -cnf.LOW_CHANNEL
 
+    def inverse_punishment(x, min_capacity, punishment_coef):
+        delta = min_capacity * (math.sqrt(5) - 1) / 2
+        punishment = punishment_coef * (3* min_capacity / (x + delta) - 3* min_capacity / (min_capacity + delta))
+        return punishment
     
     # 获取UAV部分的信道容量 (G_c[:, n_u:])
     uav_ground_capacity = G_c[:, n_u:]  # 地面AP到UAV的信道容量
@@ -100,14 +135,27 @@ def CompPunishment(A_c,G_c):
         total_ground_uav_capacity = np.sum(uav_ground_capacity[:, i])
         user_capacity = np.sum(A_c[i, :])
         
-        # 条件1: 检查UAV的总信道容量是否低于最小要求
-        if total_ground_uav_capacity < cnf.min_capacity:
-            punishment += major_punish_coef*(cnf.min_capacity - total_ground_uav_capacity)
+        # 条件2: 检查UAV的总信道容量是否低于最小要求
+        if total_ground_uav_capacity < cnf.min_capacity_uav:
+            punishment += inverse_punishment(total_ground_uav_capacity, cnf.min_capacity_uav, low_channel_punishment)
             
-        # 条件2: 检查UAV与用户的信道容量是否大于其与地面AP的信道容量
+        # 条件3: 检查UAV与用户的信道容量是否大于其与地面AP的信道容量
         if total_ground_uav_capacity < user_capacity:
-            punishment += minor_punish_coef*(user_capacity - total_ground_uav_capacity)
-    
+            punishment += inverse_punishment(total_ground_uav_capacity, user_capacity, low_channel_punishment)
+
+    # 条件4：检查每个用户的总信道容量
+    for u in range(n_u):
+        # 计算用户从地面AP获得的容量
+        ground_capacity = np.sum(G_c[:, u])
+        # 计算用户从UAV获得的容量
+        aerial_capacity = np.sum(A_c[:, u])
+        # 计算总容量
+        total_user_capacity = ground_capacity + aerial_capacity
+        
+        # 如果用户的总信道容量为0，添加一个很大的惩罚
+        if total_user_capacity < cnf.min_capacity_user:
+            punishment += inverse_punishment(total_user_capacity, cnf.min_capacity_user, low_channel_punishment) 
+
     return punishment
 
 def CompCluster(A_eta,G_eta):
@@ -185,24 +233,15 @@ def CompLinkCost(adj_matrix,cluster_labels):
 # Function to compute utility (reward) for the given state and action
 def CompUtility(State, Aution):
 
-    move_num = cnf.NUM_A_AP*3
-    move = Aution[:move_num]
-    scales = np.array([cnf.MAX_V_X] * cnf.NUM_A_AP +
-                    [cnf.MAX_V_Y] * cnf.NUM_A_AP +
-                    [cnf.MAX_V_H] * cnf.NUM_A_AP)
-    move = move * scales
+    position, _, move, power_alloc_action = map(State, Aution)
 
-    raw_power_alloc = Aution[move_num:]
-
-    position = State[:3*cnf.NUM_A_AP+2*cnf.NUM_G_AP+2*cnf.NUM_USERS]
-
-    G_beta, G_eta, A_beta, A_eta = split(raw_power_alloc, position)
+    G_beta, G_eta, A_beta, A_eta = split(power_alloc_action, position)
      # 计算地面AP的信道容量
     G_c = np.zeros((n_g, n_a + n_u))
     for i in range(n_u + n_a):  
         noise_coef = np.sum(G_eta[:, [j for j in range(n_u+n_a) if j != i]], axis=1)  # shape: (n_g,)
         tot_noise = np.sum(noise_coef * cnf.P_G * G_beta[:, i])
-        signal = np.sum(cnf.P_G * G_beta[:, i] * G_eta[:, i])
+        signal = cnf.P_G * G_beta[:, i] * G_eta[:, i]
         G_c[:, i] = np.log2(1 + signal / (tot_noise + cnf.white_noise))
 
     # 计算空中AP的信道容量
@@ -210,11 +249,11 @@ def CompUtility(State, Aution):
     for i in range(n_u):  
         noise_coef = np.sum(A_eta[:, [j for j in range(n_u) if j != i]], axis=1)  # shape: (n_a,)
         tot_noise = np.sum(noise_coef * cnf.P_A * A_beta[:, i])
-        signal = np.sum(cnf.P_A * A_beta[:, i] * A_eta[:, i])
+        signal = cnf.P_A * A_beta[:, i] * A_eta[:, i]
         A_c[:, i] = np.log2(1 + signal / (tot_noise + cnf.white_noise))
 
     # 计算惩罚
-    punishment = CompPunishment(A_c, G_c)
+    punishment = CompPunishment(A_c, G_c, A_eta, G_eta)
     # 计算簇
     adj_matrix, cluster_labels = CompCluster(A_eta, G_eta)
     # 计算连接成本
@@ -224,117 +263,14 @@ def CompUtility(State, Aution):
     capacity = np.zeros((cnf.NUM_AP, n_u))
     capacity[:n_g, :] = G_c[:, :n_u]  # 地面AP的容量
     capacity[n_g:, :] = A_c[:, :n_u]  # 空中AP的容量
+    tot_capacity = np.sum(capacity)
 
-    reward = np.sum(capacity) + punishment - link_cost
+    p_c = cnf.punishment_coef
+    c_c = cnf.cost_coef
+    reward = tot_capacity*(1-p_c-c_c) + punishment*p_c - link_cost*c_c
 
+    #当启用行为模仿模式时，需要提出算法，在返回值中传递专家动作
     expert_action = 0
     subopt_expert_action = 0
 
-    return reward, expert_action, subopt_expert_action, Aution
-
-def load_test_data(filename='test_data.txt'):
-    test_data = {}
-    try:
-        test_data_path = os.path.join(os.path.dirname(__file__), filename)
-        test_data['state'] = np.loadtxt(test_data_path, delimiter=',', max_rows=1)
-        test_data['action'] = np.loadtxt(test_data_path, delimiter=',', skiprows=1, max_rows=1)
-        test_data['A_c'] = np.loadtxt(test_data_path, delimiter=',', skiprows=2, max_rows=n_a)
-        test_data['G_c'] = np.loadtxt(test_data_path, delimiter=',', skiprows=2+n_a, max_rows=n_g)
-        return test_data
-    except Exception as e:
-        print(f"读取测试数据失败: {str(e)}")
-        return None
-
-def test_utility_functions():
-    print("===开始测试功能===")
-    
-    # 1. 创建测试数据
-    print("\n1. 加载测试数据...")
-    test_data = load_test_data()
-    if test_data is None:
-        print("无法加载测试数据，测试终止")
-        return
-        
-    test_state = test_data['state']
-    test_action = test_data['action']
-    print(f"测试状态数据:\n{test_state}")
-    print(f"测试动作数据:\n{test_action}")
-    
-    move_num = n_a * 3
-    power_alloc_size = n_g*(n_u+n_a) + n_a*n_u
-    test_action = np.random.uniform(0, 1, move_num + power_alloc_size)
-    print(f"测试动作数据:\n{test_action}")
-    
-    # 2. 测试split函数
-    print("\n2. 测试split函数...")
-    try:
-        G_beta, G_eta, A_beta, A_eta = split(test_action[move_num:], test_state)
-        print("✓ split函数测试通过")
-        print(f"- G_beta shape: {G_beta.shape}")
-        print(f"- G_beta 值:\n{G_beta}")
-        print(f"- G_eta shape: {G_eta.shape}")
-        print(f"- G_eta 值:\n{G_eta}")
-        print(f"- A_beta shape: {A_beta.shape}")
-        print(f"- A_beta 值:\n{A_beta}")
-        print(f"- A_eta shape: {A_eta.shape}")
-        print(f"- A_eta 值:\n{A_eta}")
-    except Exception as e:
-        print(f"× split函数测试失败: {str(e)}")
-    
-    # 3. 测试CompPunishment函数
-    print("\n3. 测试CompPunishment函数...")
-    try:
-        A_c = np.random.uniform(0, 10, (n_a, n_u))
-        G_c = np.random.uniform(0, 10, (n_g, n_a + n_u))
-        print(f"测试用A_c矩阵:\n{A_c}")
-        print(f"测试用G_c矩阵:\n{G_c}")
-        punishment = CompPunishment(A_c, G_c)
-        print(f"✓ CompPunishment函数测试通过")
-        print(f"- 惩罚值: {punishment}")
-    except Exception as e:
-        print(f"× CompPunishment函数测试失败: {str(e)}")
-    
-    # 4. 测试CompCluster函数
-    print("\n4. 测试CompCluster函数...")
-    try:
-        adj_matrix, cluster_labels = CompCluster(A_eta, G_eta)
-        print("✓ CompCluster函数测试通过")
-        print(f"- 邻接矩阵:\n{adj_matrix}")
-        print(f"- 簇标签: {cluster_labels}")
-        print(f"- 簇的数量: {len(np.unique(cluster_labels))}")
-        # 输出每个簇的节点
-        for i in range(len(np.unique(cluster_labels))):
-            nodes = np.where(cluster_labels == i)[0]
-            print(f"  簇 {i} 包含的节点: {nodes}")
-    except Exception as e:
-        print(f"× CompCluster函数测试失败: {str(e)}")
-    
-    # 5. 测试CompLinkCost函数
-    print("\n5. 测试CompLinkCost函数...")
-    try:
-        link_cost = CompLinkCost(adj_matrix, cluster_labels)
-        print("✓ CompLinkCost函数测试通过")
-        print(f"- 连接成本: {link_cost}")
-        # 分解成本计算
-        uav_cost = sum([np.sum(adj_matrix[n_g + a, n_g+n_a:]) * cnf.LINK_COST for a in range(n_a)])
-        print(f"- UAV连接成本: {uav_cost}")
-        cluster_cost = link_cost - uav_cost
-        print(f"- 簇协作成本: {cluster_cost}")
-    except Exception as e:
-        print(f"× CompLinkCost函数测试失败: {str(e)}")
-    
-    # 6. 测试完整的CompUtility函数
-    print("\n6. 测试CompUtility函数...")
-    try:
-        reward, expert_action, subopt_expert_action, action = CompUtility(test_state, test_action)
-        print("✓ CompUtility函数测试通过")
-        print(f"- 总奖励值: {reward}")
-        print(f"- 专家动作: {expert_action}")
-        print(f"- 次优专家动作: {subopt_expert_action}")
-        print(f"- 实际动作: {action}")
-    except Exception as e:
-        print(f"× CompUtility函数测试失败: {str(e)}")
-
-
-if __name__ == "__main__":
-    test_utility_functions()
+    return reward,tot_capacity, punishment,link_cost, expert_action, subopt_expert_action, np.concatenate((move, power_alloc_action))

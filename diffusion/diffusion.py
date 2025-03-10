@@ -28,7 +28,7 @@ class Diffusion(nn.Module):
         self.action_dim = action_dim
         self.max_action = max_action
         self.model = model
-        self.sigmoid_expand = 1
+        self.expand = 1
 
         # Define the diffusion beta schedule
         if beta_schedule == 'linear':
@@ -108,10 +108,11 @@ class Diffusion(nn.Module):
 
     # Define the mean and variance of the prior distribution
     def p_mean_variance(self, x, t, s):
-        x_recon = self.predict_start_from_noise(x, t=t, noise=self.model(x, t, s))
+        restricted_noise = torch.tanh(self.model(x, t, s))
+        x_recon = self.predict_start_from_noise(x, t=t, noise=restricted_noise)
 
         if self.clip_denoised:
-            x_recon = torch.sigmoid(x_recon/self.sigmoid_expand) * self.max_action   #edited
+            x_recon = torch.tanh(x_recon/self.expand) * self.max_action #edited
         else:
             assert RuntimeError()
 
@@ -178,7 +179,7 @@ class Diffusion(nn.Module):
         shape = (batch_size, self.action_dim)
         action = self.p_sample_loop(state, shape, *args, **kwargs)
         # Clamping the actions to be between -max_action and max_action
-        return torch.sigmoid(action/self.sigmoid_expand) * self.max_action #edited
+        return action.clamp_(-self.max_action, self.max_action) #edited
         # return action
 
     # ------------------------------------------ training ------------------------------------------#

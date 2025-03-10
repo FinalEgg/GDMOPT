@@ -17,7 +17,7 @@ class AIGCEnv(gym.Env):
         num_links_g=cnf.NUM_G_AP*(cnf.NUM_USERS+cnf.NUM_A_AP)
         num_links=num_links_a+num_links_g
         move = cnf.NUM_A_AP*3
-        self._action_space = Discrete(move + num_links)
+        self._action_space = Box(low=-1, high=1, shape=(move + num_links,), dtype=np.float32)
         self._num_steps = 0
         self._terminated = False
         self._laststate = None
@@ -63,20 +63,35 @@ class AIGCEnv(gym.Env):
         # Check if episode has ended
         assert not self._terminated, "One episodic has terminated"
         # Calculate reward based on last state and action taken
-        reward, expert_action, sub_expert_action, real_action = CompUtility(self.position, action)
-        # action: 3*NUM_A_AP bits for moving, NUM_LNIKS bits for power allocation
-        
-        start1=cnf.NUM_A_AP*3
-        start2=cnf.NUM_A_AP*3+cnf.NUM_G_AP*2+cnf.NUM_USERS*2
+        reward, tot_capacity, punishment,link_cost,expert_action, sub_expert_action, real_action = CompUtility(self.position, action)
+        # action: 3*NUM_A_AP bits for moving, NUM_LINKS bits for power allocation
+        start1 = cnf.NUM_A_AP * 3
+        start2 = cnf.NUM_A_AP * 3 + cnf.NUM_G_AP * 2 + cnf.NUM_USERS * 2
+
+        move_update = self._laststate[:start1] + real_action[:start1]
+        n_a = cnf.NUM_A_AP
+        move_update[:n_a] = np.clip(move_update[:n_a], 0, cnf.MAX_X)
+        move_update[n_a:2*n_a] = np.clip(move_update[n_a:2*n_a], 0, cnf.MAX_Y)
+        move_update[2*n_a:3*n_a] = np.clip(move_update[2*n_a:3*n_a], 0, cnf.MAX_H)
+        self._laststate[:start1] = move_update
+
+        # 更新功率分配部分
+        self._laststate[start2:-1] = real_action[start1:]
         self._laststate[-1] = reward
-        self._laststate[:start1] = self._laststate[:start1] + real_action[:start1]
-        self._laststate[start2:-1]=real_action[start1:]
         self._num_steps += 1
+
         # Check if episode should end based on number of steps taken
         if self._num_steps >= self._steps_per_episode:
             self._terminated = True
         # Information about number of steps taken
-        info = {'num_steps': self._num_steps, 'expert_action': expert_action, 'sub_expert_action': sub_expert_action}
+        info = {
+            'num_steps': self._num_steps,
+            'expert_action': expert_action,
+            'sub_expert_action': sub_expert_action,
+            'punishment': punishment,
+            'link_cost': link_cost,
+            'capacity_sum': tot_capacity
+        }
         return self._laststate, reward, self._terminated, info
 
     def reset(self):

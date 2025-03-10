@@ -28,13 +28,13 @@ def get_args():
     parser.add_argument('--algorithm', type=str, default='diffusion_opt')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--buffer-size', type=int, default=1e6)#1e6
-    parser.add_argument('-e', '--epoch', type=int, default=1e3)# 1000
-    parser.add_argument('--step-per-epoch', type=int, default=3)# 100
-    parser.add_argument('--step-per-collect', type=int, default=5)#1000
+    parser.add_argument('-e', '--epoch', type=int, default=1000)# 1000
+    parser.add_argument('--step-per-epoch', type=int, default=100)# 100
+    parser.add_argument('--step-per-collect', type=int, default=100)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=1)
-    parser.add_argument('--n-step', type=int, default=3)
+    parser.add_argument('--n-step', type=int, default=10)
     parser.add_argument('--training-num', type=int, default=1)
     parser.add_argument('--test-num', type=int, default=1)
     parser.add_argument('--logdir', type=str, default='log')
@@ -51,8 +51,8 @@ def get_args():
     parser.add_argument('--note', type=str, default='')
 
     # for diffusion
-    parser.add_argument('--actor-lr', type=float, default=1e-4)
-    parser.add_argument('--critic-lr', type=float, default=1e-4)
+    parser.add_argument('--actor-lr', type=float, default=2e-5)
+    parser.add_argument('--critic-lr', type=float, default=2e-5)
     parser.add_argument('--tau', type=float, default=0.005)  # for soft update
     # adjust
     parser.add_argument('-t', '--n-timesteps', type=int, default=6)  # for diffusion chain 3 & 8 & 12
@@ -65,7 +65,7 @@ def get_args():
     parser.add_argument('--bc-coef', default=False)
 
     # for prioritized experience replay
-    parser.add_argument('--prioritized-replay', action='store_true', default=False)
+    parser.add_argument('--prioritized-replay', action='store_true', default=True) #edit
     parser.add_argument('--prior-alpha', type=float, default=0.4)#
     parser.add_argument('--prior-beta', type=float, default=0.4)#
 
@@ -78,8 +78,8 @@ def main(args=get_args()):
     # create environments
     env, train_envs, test_envs = make_aigc_env(args.training_num, args.test_num)
     args.state_shape = env.observation_space.shape[0]
-    args.action_shape = env.action_space.n
-    args.max_action = 1
+    args.action_shape = env.action_space.shape[0]
+    args.max_action = 1     #涉及多处代码修改，请固定为1
 
     args.exploration_noise = args.exploration_noise * args.max_action
     # seed
@@ -177,6 +177,13 @@ def main(args=get_args()):
     def save_best_fn(policy):
         torch.save(policy.state_dict(), os.path.join(log_path, 'policy.pth'))
 
+    def test_fn(epoch, env_step, **kwargs):
+        info = kwargs.get("info", {})
+        if info:
+            logger.writer.add_scalar("test/punishment", info.get("punishment", 0), env_step)
+            logger.writer.add_scalar("test/link_cost", info.get("link_cost", 0), env_step)
+            logger.writer.add_scalar("test/capacity_sum", info.get("capacity_sum", 0), env_step)
+        
     # Trainer
     if not args.watch:
         result = offpolicy_trainer(
@@ -190,7 +197,8 @@ def main(args=get_args()):
             args.batch_size,
             save_best_fn=save_best_fn,
             logger=logger,
-            test_in_train=False
+            test_in_train=False,
+            test_fn=test_fn  # 添加自定义回调
         )
         pprint.pprint(result)
 
