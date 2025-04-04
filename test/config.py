@@ -23,7 +23,7 @@ P_G=50
 white_noise = 1e-6
 
 punishment_coef = 0.1
-cost_coef = 0.3
+cost_coef = 0.1
 OVER_LOAD_PUNISHMENT = 2/punishment_coef
 LOW_CHANNEL = 3/punishment_coef
 CRASH = 100

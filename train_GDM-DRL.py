@@ -13,8 +13,8 @@ from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
 from env import make_aigc_env
 from policy import DiffusionOPT
-from diffusion import Diffusion
-from diffusion.model import MLP, DoubleCritic
+from actors.diffusion import Diffusion
+from actors.diffusion.model import MLP, DoubleCritic
 import warnings
 
 # Ignore warnings
@@ -24,19 +24,19 @@ warnings.filterwarnings('ignore')
 def get_args():
     # Create argument parser
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exploration-noise", type=float, default=0.1)
+    parser.add_argument("--exploration-noise", type=float, default=0.2)
     parser.add_argument('--algorithm', type=str, default='diffusion_opt')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--buffer-size', type=int, default=1e6)#1e6
     parser.add_argument('-e', '--epoch', type=int, default=1000)# 1000
     parser.add_argument('--step-per-epoch', type=int, default=100)# 100
-    parser.add_argument('--step-per-collect', type=int, default=100)#1000
+    parser.add_argument('--step-per-collect', type=int, default=1000)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=1)
-    parser.add_argument('--n-step', type=int, default=10)
-    parser.add_argument('--training-num', type=int, default=1)
-    parser.add_argument('--test-num', type=int, default=1)
+    parser.add_argument('--n-step', type=int, default=3)
+    parser.add_argument('--training-num', type=int, default=100)
+    parser.add_argument('--test-num', type=int, default=100)
     parser.add_argument('--logdir', type=str, default='log')
     parser.add_argument('--log-prefix', type=str, default='default')
     parser.add_argument('--render', type=float, default=0.1)

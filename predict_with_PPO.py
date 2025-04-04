@@ -10,7 +10,7 @@ from tianshou.utils.net.continuous import Actor
 from tianshou.policy import PPOPolicy
 from env import make_aigc_env
 from env import config as cnf
-from env.utility import split, map, CompCluster
+from env.utility import arr2mat, arr_prep, calc_cluster
 
 # 全局变量，用于记录 UAV 历史轨迹，每个元素为 (旧的 x_a, y_a)
 history = []
@@ -34,7 +34,7 @@ def plot_network(ax, state, action, history=None):
     # 从 state 中剔除 reward 部分
     state_clean = state[:-1]
     # 调用预处理函数 map，将 state 和 action 拆分为各部分
-    position, _, move, power_alloc_action = map(state_clean, action)
+    position, _, move, power_alloc_action = arr_prep(state_clean, action)
     
     n_a = cnf.NUM_A_AP
     n_g = cnf.NUM_G_AP
@@ -83,33 +83,33 @@ def plot_network(ax, state, action, history=None):
     # 绘制地面AP到用户的连线
     for g in range(n_g):
         for u in range(n_u):
-            if G_eta := split(power_alloc_action, position)[1][g, u] > 0:
+            if G_eta := arr2mat(power_alloc_action, position)[1][g, u] > 0:
                 ax.plot([x_g[g], x_u[u]], [y_g[g], y_u[u]], 'r--', alpha=0.3)
                 mid_x = (x_g[g] + x_u[u]) / 2
                 mid_y = (y_g[g] + y_u[u]) / 2
-                ax.text(mid_x, mid_y, f'{split(power_alloc_action, position)[1][g, u]:.2f}', fontsize=8)
+                ax.text(mid_x, mid_y, f'{arr2mat(power_alloc_action, position)[1][g, u]:.2f}', fontsize=8)
 
     # 绘制空中AP到用户的连线
     for a in range(n_a):
         for u in range(n_u):
-            if A_eta := split(power_alloc_action, position)[3][a, u] > 0:
+            if A_eta := arr2mat(power_alloc_action, position)[3][a, u] > 0:
                 ax.plot([x_a[a], x_u[u]], [y_a[a], y_u[u]], 'b--', alpha=0.3)
                 mid_x = (x_a[a] + x_u[u]) / 2
                 mid_y = (y_a[a] + y_u[u]) / 2
-                ax.text(mid_x, mid_y, f'{split(power_alloc_action, position)[3][a, u]:.2f}', fontsize=8)
+                ax.text(mid_x, mid_y, f'{arr2mat(power_alloc_action, position)[3][a, u]:.2f}', fontsize=8)
     
     # 绘制地面AP到空中AP的连线
     for g in range(n_g):
         for a in range(n_a):
             idx = n_u + a
-            if split(power_alloc_action, position)[1][g, idx] > 0:
+            if arr2mat(power_alloc_action, position)[1][g, idx] > 0:
                 ax.plot([x_g[g], x_a[a]], [y_g[g], y_a[a]], 'r--', alpha=0.3)
                 mid_x = (x_g[g] + x_a[a]) / 2
                 mid_y = (y_g[g] + y_a[a]) / 2
-                ax.text(mid_x, mid_y, f'{split(power_alloc_action, position)[1][g, idx]:.2f}', fontsize=8)
+                ax.text(mid_x, mid_y, f'{arr2mat(power_alloc_action, position)[1][g, idx]:.2f}', fontsize=8)
     
     # 计算AP聚簇情况（仅考虑地面AP和UAV）
-    _, cluster_labels = CompCluster(split(power_alloc_action, position)[3], split(power_alloc_action, position)[1])
+    _, cluster_labels = calc_cluster(arr2mat(power_alloc_action, position)[3], arr2mat(power_alloc_action, position)[1])
     clusters = {}
     for idx, label in enumerate(cluster_labels):
         if idx < n_g + n_a:
@@ -195,7 +195,7 @@ def simulate_ppo(model_path, interval=1.5):
         
         # 利用 map 函数获得当前 UAV 运动量（move），进而计算新 UAV 坐标
         state_clean = custom_state[:-1]
-        _, _, move, _ = map(state_clean, action)
+        _, _, move, _ = arr_prep(state_clean, action)
         # UAV 初始坐标：custom_state[0:n_a] 为 x 坐标，custom_state[n_a:2*n_a] 为 y 坐标
         x_a_old = custom_state[0:n_a].copy()
         y_a_old = custom_state[n_a:2*n_a].copy()

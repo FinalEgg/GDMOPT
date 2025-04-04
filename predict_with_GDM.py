@@ -4,11 +4,11 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import numpy as np
 import time
-from diffusion import Diffusion 
-from diffusion.model import MLP
+from actors.diffusion import Diffusion 
+from actors.diffusion.model import MLP
 from env import make_aigc_env
 from env import config as cnf
-from env.utility import split, map, CompCluster
+from env.utility import arr2mat, arr_prep, calc_cluster
 
 # 全局变量，用于记录 UAV 历史轨迹，每个元素为 (旧的 x_a, y_a)
 history = []
@@ -18,8 +18,8 @@ history = []
 def plot_network(ax, state, action, history=None):
     # 从 state 中剔除 reward 部分
     state_clean = state[:-1]
-    # 调用预处理函数 map，将 state 和 action 拆分为各部分
-    position, _, move, power_alloc_action = map(state_clean, action)
+    # 调用预处理函数 arr_prep，将 state 和 action 拆分为各部分
+    actual_position, power_alloc_state, move, power_alloc_action, position, norm_move = arr_prep(state_clean, action)
     
     n_a = cnf.NUM_A_AP
     n_g = cnf.NUM_G_AP
@@ -41,6 +41,10 @@ def plot_network(ax, state, action, history=None):
     ax.set_xlabel('X coordinate')
     ax.set_ylabel('Y coordinate')
     ax.grid(True)
+    
+    # 设置固定比例尺，不随内容变化
+    ax.set_xlim(0, cnf.MAX_X)
+    ax.set_ylim(0, cnf.MAX_Y)
 
     # 绘制地面AP
     ax.scatter(x_g, y_g, c='red', marker='^', s=100, label='Ground AP')
@@ -56,6 +60,7 @@ def plot_network(ax, state, action, history=None):
     ax.scatter(x_a, y_a, c='blue', marker='s', s=100, label='UAV')
     for idx, (xi, yi, hi) in enumerate(zip(x_a, y_a, h_a)):
         ax.text(xi, yi-30, f'A{idx}\nH:{hi:.1f}', fontsize=10, ha='center', color='blue')
+
     
     # 绘制 UAV 运动方向箭头及新位置标记
     new_x_a = x_a + move[:n_a]
@@ -68,39 +73,46 @@ def plot_network(ax, state, action, history=None):
     # 绘制地面AP到用户的连线
     for g in range(n_g):
         for u in range(n_u):
-            if G_eta := split(power_alloc_action, position)[1][g, u] > 0:
+            if G_eta_val := arr2mat(power_alloc_action, position)[1][g, u] > 0:
                 ax.plot([x_g[g], x_u[u]], [y_g[g], y_u[u]], 'r--', alpha=0.3)
                 mid_x = (x_g[g] + x_u[u]) / 2
                 mid_y = (y_g[g] + y_u[u]) / 2
-                ax.text(mid_x, mid_y, f'{split(power_alloc_action, position)[1][g, u]:.2f}', fontsize=8)
+                ax.text(mid_x, mid_y, f'{arr2mat(power_alloc_action, position)[1][g, u]:.2f}', fontsize=8)
 
     # 绘制空中AP到用户的连线
     for a in range(n_a):
         for u in range(n_u):
-            if A_eta := split(power_alloc_action, position)[3][a, u] > 0:
+            if A_eta_val := arr2mat(power_alloc_action, position)[3][a, u] > 0:
                 ax.plot([x_a[a], x_u[u]], [y_a[a], y_u[u]], 'b--', alpha=0.3)
                 mid_x = (x_a[a] + x_u[u]) / 2
                 mid_y = (y_a[a] + y_u[u]) / 2
-                ax.text(mid_x, mid_y, f'{split(power_alloc_action, position)[3][a, u]:.2f}', fontsize=8)
+                ax.text(mid_x, mid_y, f'{arr2mat(power_alloc_action, position)[3][a, u]:.2f}', fontsize=8)
     
     # 绘制地面AP到空中AP的连线
     for g in range(n_g):
         for a in range(n_a):
             idx = n_u + a
-            if split(power_alloc_action, position)[1][g, idx] > 0:
+            if arr2mat(power_alloc_action, position)[1][g, idx] > 0:
                 ax.plot([x_g[g], x_a[a]], [y_g[g], y_a[a]], 'r--', alpha=0.3)
                 mid_x = (x_g[g] + x_a[a]) / 2
                 mid_y = (y_g[g] + y_a[a]) / 2
-                ax.text(mid_x, mid_y, f'{split(power_alloc_action, position)[1][g, idx]:.2f}', fontsize=8)
+                ax.text(mid_x, mid_y, f'{arr2mat(power_alloc_action, position)[1][g, idx]:.2f}', fontsize=8)
     
     # 计算AP聚簇情况（仅考虑地面AP和UAV）
-    _, cluster_labels = CompCluster(split(power_alloc_action, position)[3], split(power_alloc_action, position)[1])
+    _, cluster_labels = calc_cluster(arr2mat(power_alloc_action, position)[3], 
+                                     arr2mat(power_alloc_action, position)[1])
     clusters = {}
     for idx, label in enumerate(cluster_labels):
         if idx < n_g + n_a:
-            clusters.setdefault(label, []).append(f'{"G" if idx<n_g else "A"+str(idx-n_g)}')
+            clusters.setdefault(label, []).append(f'{"G" if idx < n_g else "A"+str(idx-n_g)}')
     cluster_annotation = ', '.join([f'Cluster{label+1}: {" ".join(clusters[label])}' for label in sorted(clusters.keys())])
     ax.text(0.5, -0.12, cluster_annotation, fontsize=12, color='black',
+            transform=ax.transAxes, ha='center')
+    
+    # 计算当前 state 与 action 对应的 reward（调用新版 calc_util）
+    from env.utility import calc_util
+    reward, _, _, _, _, _, _ = calc_util(state, action)
+    ax.text(0.5, -0.18, f"Reward: {reward:.2f}", fontsize=12, color='black',
             transform=ax.transAxes, ha='center')
     
     # 绘制 UAV 历史轨迹（仅显示 UAV 历史位置）
@@ -155,7 +167,7 @@ def simulate_diffusion(model_path, interval=1.5):
         action = predicted_action.detach().cpu().numpy().squeeze(0)
         # 利用 map 函数获得当前 UAV 运动量（move），进而计算新 UAV 坐标
         state_clean = custom_state[:-1]
-        _, _, move, _ = map(state_clean, action)
+        _, _, move, _, _, _ = arr_prep(state_clean, action)
         # UAV 初始坐标：custom_state[0:n_a] 为 x 坐标，custom_state[n_a:2*n_a] 为 y 坐标
         x_a_old = custom_state[0:n_a].copy()
         y_a_old = custom_state[n_a:2*n_a].copy()
@@ -214,9 +226,46 @@ def state(mode):
         reward_in = [0]
         states = np.concatenate([x_a, y_a, h_a, x_g, y_g, x_u, y_u, p_alloc, reward_in])
         return states
+    elif mode == 2:
+        # 导入test_case模块中的fixed_grid_environment函数
+        from test.test_case import fixed_grid_environment
+        
+        # 获取归一化的状态
+        normalized_state = fixed_grid_environment()
+        
+        n_a = cnf.NUM_A_AP
+        n_g = cnf.NUM_G_AP
+        
+        # 将归一化坐标转换为实际空间坐标
+        # UAV坐标 (x_a, y_a, h_a)
+        normalized_state[0:n_a] *= cnf.MAX_X  # x_a
+        normalized_state[n_a:2*n_a] *= cnf.MAX_Y  # y_a
+        normalized_state[2*n_a:3*n_a] *= cnf.MAX_H  # h_a
+        
+        # 地面基站坐标 (x_g, y_g)
+        normalized_state[3*n_a:3*n_a+n_g] *= cnf.MAX_X  # x_g
+        normalized_state[3*n_a+n_g:3*n_a+2*n_g] *= cnf.MAX_Y  # y_g
+        
+        # 用户坐标 (x_u, y_u)
+        normalized_state[3*n_a+2*n_g:3*n_a+2*n_g+cnf.NUM_USERS] *= cnf.MAX_X  # x_u
+        normalized_state[3*n_a+2*n_g+cnf.NUM_USERS:3*n_a+2*n_g+2*cnf.NUM_USERS] *= cnf.MAX_Y  # y_u
+        
+        return normalized_state
 
 if __name__ == "__main__":
-    # 要求交互式仿真时，可启用 simulate_diffusion
-    model_path = "log/default/diffusion/model-3-box/policy.pth"
-    simulate_diffusion(model_path)
-    # 如需使用原有预测流程，可调用 predict_with_diffusion(model_path, state(1))
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='UAV网络仿真')
+    parser.add_argument('--mode', type=int, default=1, choices=[1, 2],
+                        help='状态生成模式: 1=随机, 2=固定网格布局')
+    parser.add_argument('--model', type=str, default="log/default/diffusion/model-42/policy.pth",
+                        help='模型路径')
+    
+    args = parser.parse_args()
+    
+    # 根据命令行参数选择模式
+    mode = args.mode
+    model_path = args.model
+    
+    # 启动仿真
+    simulate_diffusion(model_path, interval=1.5)
