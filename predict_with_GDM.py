@@ -126,7 +126,7 @@ def simulate_diffusion(model_path, interval=1.5):
     # 创建环境、生成初始状态，并加载模型
     env, _, _ = make_aigc_env(1, 1)
     n_a = cnf.NUM_A_AP
-    custom_state = state(1)
+    custom_state = state(2)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
     max_action = 1.0
