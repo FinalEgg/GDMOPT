@@ -1,7 +1,7 @@
 import gym
 from gym.spaces import Box, Discrete
 from tianshou.env import DummyVectorEnv
-from .utility import calc_util
+from .utility_gpu import calc_util
 import numpy as np
 from . import config  as cnf
 import time
