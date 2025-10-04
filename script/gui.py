@@ -15,8 +15,7 @@ from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
 from env import make_aigc_env
 from policy import DiffusionOPT
-from diffusion import Diffusion
-from diffusion.model import MLP, DoubleCritic
+from model.diffusion import Diffusion, MLP, DoubleCritic
 import warnings
 import sys
 from types import SimpleNamespace

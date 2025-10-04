@@ -1,6 +1,8 @@
 # Import necessary libraries
 import argparse
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pprint
 import torch
 import numpy as np
@@ -13,8 +15,7 @@ from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
 from env import make_aigc_env
 from policy import DiffusionOPT
-from diffusion import Diffusion
-from diffusion.model import MLP, DoubleCritic
+from model.diffusion import Diffusion, MLP, DoubleCritic
 import warnings
 
 # Ignore warnings

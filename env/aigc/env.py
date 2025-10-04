@@ -1,5 +1,5 @@
-import gym
-from gym.spaces import Box, Discrete
+import gymnasium as gym
+from gymnasium.spaces import Box, Discrete
 from tianshou.env import DummyVectorEnv
 from .utility import CompUtility
 import numpy as np
@@ -65,7 +65,9 @@ class AIGCEnv(gym.Env):
             self._terminated = True
         # Information about number of steps taken
         info = {'num_steps': self._num_steps, 'expert_action': expert_action, 'sub_expert_action': sub_expert_action}
-        return self._laststate, reward, self._terminated, info
+        terminated = False  # No natural termination in this env
+        truncated = self._terminated
+        return self._laststate, reward, terminated, truncated, info
 
     def reset(self):
         # Reset the environment to its initial state
