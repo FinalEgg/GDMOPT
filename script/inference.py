@@ -1,5 +1,8 @@
 import torch
 import numpy as np
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from env import make_aigc_env
 from policy import DiffusionOPT
 from model.diffusion import Diffusion, MLP, DoubleCritic
@@ -11,7 +14,7 @@ def test_inference():
 
     # 定义模型参数 (根据训练时的参数)
     state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n  # 假设是离散动作
+    action_dim = env.action_space.shape[0]  # Now continuous
 
     # 创建模型
     model = MLP(state_dim=state_dim, action_dim=action_dim)
@@ -55,8 +58,7 @@ def test_inference():
         batch = Batch(obs=obs_tensor)
         with torch.no_grad():
             result = policy.forward(batch)
-            action_logits = result.act
-            action = torch.argmax(action_logits).item()  # 假设是 logits，取 argmax
+            action = result.act.squeeze().numpy()  # Continuous action
 
         # 执行动作
         next_obs, reward, terminated, truncated, info = env.step(action)

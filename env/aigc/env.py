@@ -11,8 +11,8 @@ class AIGCEnv(gym.Env):
         self._flag = 0
         # Define observation space based on the shape of the state
         self._observation_space = Box(shape=self.state.shape, low=0, high=1)
-        # Define action space - discrete space with 3 possible actions
-        self._action_space = Discrete(2*5)
+        # Define action space - continuous space with 10 dimensions (power allocation ratios for 10 channels)
+        self._action_space = Box(low=0, high=1, shape=(10,))
         self._num_steps = 0
         self._terminated = False
         self._laststate = None

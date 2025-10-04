@@ -13,7 +13,7 @@ from tianshou.utils import TensorboardLogger
 from tianshou.trainer import offpolicy_trainer
 from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
-from env import make_aigc_env
+from env import make_pendulum_env, make_optimization_env
 from policy import DiffusionOPT
 from model.diffusion import Diffusion, MLP, DoubleCritic
 import warnings
@@ -28,10 +28,10 @@ def get_args():
     parser.add_argument("--exploration-noise", type=float, default=0.1)
     parser.add_argument('--algorithm', type=str, default='diffusion_opt')
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--buffer-size', type=int, default=1e6)#1e6
-    parser.add_argument('-e', '--epoch', type=int, default=1e6)# 1000
-    parser.add_argument('--step-per-epoch', type=int, default=1)# 100
-    parser.add_argument('--step-per-collect', type=int, default=1)#1000
+    parser.add_argument('--buffer-size', type=int, default=10000)#1e6
+    parser.add_argument('-e', '--epoch', type=int, default=10)# 1000
+    parser.add_argument('--step-per-epoch', type=int, default=100)# 100
+    parser.add_argument('--step-per-collect', type=int, default=10)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=1)
@@ -67,8 +67,8 @@ def get_args():
 
     # for prioritized experience replay
     parser.add_argument('--prioritized-replay', action='store_true', default=False)
-    parser.add_argument('--prior-alpha', type=float, default=0.4)#
-    parser.add_argument('--prior-beta', type=float, default=0.4)#
+    parser.add_argument('--env', type=str, default='optimization', choices=['pendulum', 'optimization'])
+    parser.add_argument('--dim', type=int, default=2)  # For optimization env
 
     # Parse arguments and return them
     args = parser.parse_known_args()[0]
@@ -77,9 +77,12 @@ def get_args():
 
 def main(args=get_args()):
     # create environments
-    env, train_envs, test_envs = make_aigc_env(args.training_num, args.test_num)
+    if args.env == 'pendulum':
+        env, train_envs, test_envs = make_pendulum_env(args.training_num, args.test_num)
+    elif args.env == 'optimization':
+        env, train_envs, test_envs = make_optimization_env(args.training_num, args.test_num, dim=args.dim)
     args.state_shape = env.observation_space.shape[0]
-    args.action_shape = env.action_space.n
+    args.action_shape = env.action_space.shape[0]
     args.max_action = 1.
 
     args.exploration_noise = args.exploration_noise * args.max_action
@@ -123,7 +126,7 @@ def main(args=get_args()):
 
     ## Setup logging
     time_now = datetime.now().strftime('%b%d-%H%M%S')
-    log_path = os.path.join(args.logdir, args.log_prefix, "diffusion", time_now)
+    log_path = os.path.join(args.logdir, args.log_prefix, args.algorithm, args.env, time_now)
     writer = SummaryWriter(log_path)
     writer.add_text("args", str(args))
     logger = TensorboardLogger(writer)
