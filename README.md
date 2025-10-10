@@ -1,180 +1,175 @@
-# GDMOPT：网络优化中的生成扩散模型教程（中文 README）
+# GDMOPT：网络优化中的生成扩散模型
 
-本项目是“Beyond Deep Reinforcement Learning: A Tutorial on Generative Diffusion Models in Network Optimization”的教学代码与演示页面，聚焦于将生成扩散模型（GDM）应用于网络优化任务，并与深度强化学习（如 DDPG）进行对比与结合。项目包含命令行脚本、可视化 GUI、网页教程与训练日志/模型。
+包含：
 
-- 项目主页与教学页面：详见 [index.html](index.html)
-- 代表性脚本：DDPG 训练脚本 [script/train_ddpg.py](script/train_ddpg.py)，GDM 训练脚本 [script/train_diffusion.py](script/train_diffusion.py)
-- 参数 GUI：见 [Software/parameter_gui.py](Software/parameter_gui.py) 中的类 [`Software.parameter_gui.GUI`](Software/parameter_gui.py)
-- 实用工具：[`model.diffusion.utils.Progress`](model/diffusion/utils.py)、[`model.diffusion.utils.EarlyStopping`](model/diffusion/utils.py)，以及对应教学版本 [`diffusion.utils.Progress`](diffusion/utils.py)、[`diffusion.utils.EarlyStopping`](diffusion/utils.py)
-- 网页样式与资源：如 [static/css/index.css](static/css/index.css)
+- 训练脚本：DDPG / SAC / 生成扩散优化器（Diffusion）
+- Cell-free UAV 网络仿真可视化界面（Tkinter + Matplotlib）
+- 日志与权重管理
 
-在网络优化场景中，我们通常以约束优化形式描述问题：
-
-- 目标：最大化/最小化目标函数 $f(x)$
-- 约束：$g_i(x) \le 0, \; h_j(x) = 0$
-
-示例形式：$\max_x f(x)\ \text{s.t.}\ g(x)\le 0$。GDM 通过前向扩散与反向去噪学习可行决策分布，DDPG 则通过策略梯度在环境交互中学习。
+主页/介绍页：见根目录 [index.html](index.html)
 
 ---
 
-## 环境准备
+## 1. 安装与环境（Windows / PowerShell）
 
-建议使用 Conda 创建独立环境（Python 3.8）：
+推荐使用 Python 3.8–3.10，并创建虚拟环境：
 
-```sh
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 
-conda create --name gdmopt python==3.8
-
-conda activate gdmopt
-
+# 基础依赖
+pip install torch
 pip install tianshou==0.4.11
+pip install gymnasium matplotlib scipy
 
-pip install matplotlib==3.7.3
-
-pip install scipy==1.10.1
-
+# 如需 TensorBoard（可选）
+pip install tensorboard
 ```
 
-如需可视化 GUI，请保证已安装 tkinter（多数系统自带；若缺失请根据操作系统安装）。
+注意：
+
+- 项目已迁移至 Gymnasium，请避免安装旧版 gym；若已安装可卸载：`pip uninstall -y gym`。
+- Tkinter 多数环境自带；若缺失请根据系统安装。
 
 ---
 
-## 快速开始
+## 2. 训练（含 cell-free 环境）
 
-1) 运行网页教程（本地打开）
-
-- 直接用浏览器打开 [index.html](index.html)，内含项目介绍、运行指引与图示。
-
-2) 命令行训练
-
-- 训练 DDPG：
-
-```sh
-
-pythonscript/train_ddpg.py
+三个训练脚本均支持 `--env` 选择：`pendulum`、`optimization`、`cellfree`。为了与仿真界面联动，请使用 `cellfree` 环境训练，权重将保存在：
 
 ```
-
-- 训练生成扩散模型（GDM）优化器：
-
-```sh
-
-pythonscript/train_diffusion.py
-
+log/<log_prefix>/<algorithm>/cellfree/<timestamp>/policy.pth
 ```
 
-3) GUI 启动
+示例（在仓库根目录运行）：
 
-```sh
+```powershell
+# DDPG（Cell-free）
+python script\train_ddpg.py --env cellfree --epoch 10 --training-num 1 --test-num 1
 
-pythonSoftware/parameter_gui.py
+# SAC（Cell-free）
+python script\train_sac.py --env cellfree --epoch 10 --training-num 1 --test-num 1
 
+# Diffusion 优化器（Cell-free）
+python script\train_diffusion.py --env cellfree --epoch 10 --training-num 1 --test-num 1
 ```
 
-- GUI 参数面板定义见 [Software/parameter_gui.py](Software/parameter_gui.py) 的 [`Software.parameter_gui.GUI`](Software/parameter_gui.py)。
-- 常用参数键（在 GUI 中）：log_prefix、render、rew_norm、resume_path、watch、prioritized_replay、lr_decay、note（参见源码控件初始化）。
+说明：
+
+- 三个脚本默认 `--log-prefix default`，因此日志根路径为 `log/default/...`。
+- Diffusion 的脚本算法名为 `diffusion_opt`，其日志目录为 `log/default/diffusion_opt/...`。
 
 ---
 
-## 日志与模型
+## 3. 仿真可视化（Simulation GUI）
 
-- 训练日志与模型权重默认保存于 log/ 路径下（可通过脚本/GUI 参数控制前缀等）。
-- 示例：
+运行：
 
-  - DDPG 权重文件： [log/default/ddpg/optimization/Oct05-000901/policy.pth](log/default/ddpg/optimization/Oct05-000901/policy.pth)
-  - GDM 事件日志（TensorBoard 事件文件示例）：[log/default/diffusion_opt/optimization/Oct05-000933/events.out.tfevents.1759594173.LAPTOP-6C6RISE9.19764.0](log/default/diffusion_opt/optimization/Oct05-000933/events.out.tfevents.1759594173.LAPTOP-6C6RISE9.19764.0)
+```powershell
+python script\simulation\simulation.py
+```
 
-说明：.pth 为二进制模型快照。根据任务不同，可能包含策略网络、价值网络或扩散模型参数。
+界面功能：
 
----
+- 模型下拉：`ddpg` / `sac` / `diffusion`
+- 权重下拉：在选择模型后自动扫描 `log/default/<model>/cellfree/**/policy.pth`
+- 开始/暂停按钮：启动/暂停仿真
 
-## 代码结构（摘录）
+注意事项：
 
-- 核心训练脚本
+- 为避免参数不匹配，仿真只读取 cell-free 环境下训练得到的权重。
+- 目前 Diffusion 的训练目录名为 `diffusion_opt`，如在仿真中选择 `diffusion` 请确保对应目录存在或调整代码以匹配目录名。
+- 界面关闭时程序会自动退出。
 
-  - DDPG：[script/train_ddpg.py](script/train_ddpg.py)
-  - GDM：[script/train_diffusion.py](script/train_diffusion.py)
-- 工具与通用组件
+可视化细节：
 
-  - 扩散训练进度与早停（教学版）：[`diffusion.utils`](diffusion/utils.py) 中的 [`diffusion.utils.Progress`](diffusion/utils.py)、[`diffusion.utils.EarlyStopping`](diffusion/utils.py)
-  - 扩散训练进度与早停（模型版）：[`model.diffusion.utils`](model/diffusion/utils.py) 中的 [`model.diffusion.utils.Progress`](model/diffusion/utils.py)、[`model.diffusion.utils.EarlyStopping`](model/diffusion/utils.py)
-- 策略模块入口
+- 每架无人机自动分配不同颜色；起飞同时以相同颜色虚线标注其规划路线。
+- 基站以蓝色三角标记，充电站以黄色方块标记，起点为绿色，终点为红色。
+- 若加载了模型，将绘制无人机与基站的连接强度（阈值显示）。
 
-  - [policy/__init__.py](policy/__init__.py)
-  - 具体算法与变体位于 policy 子目录（如 ddpg、diffusion_opt）
-- 可视化与网页
+安全加载：
 
-  - 教学页面与资源： [index.html](index.html), [static/css/index.css](static/css/index.css)
-
----
-
-## 常见问题
-
-- 安装冲突/依赖版本不匹配
-
-  - 固定 Python 3.8 与给定依赖版本；如需升级，请逐项验证兼容性。
-- 无法打开 GUI
-
-  - 请检查 tkinter 是否可用；Linux 可能需额外安装（如 `sudo apt-get install python3-tk`）。
-- 模型文件过大/不可读
-
-  - .pth 为二进制文件，仅能由相应框架加载；请通过训练脚本或评估脚本进行读取。
+- 仿真中的模型加载使用 `torch.load(..., weights_only=True)`，建议使用较新的 PyTorch 版本。
 
 ---
 
-## 实验说明与对比
+## 4. 日志与可视化
 
-- 本项目提供 DDPG 与 GDM 两种优化范式对比。对于简化问题，DRL 未必劣于 GDM；对于更复杂/含状态转移的优化问题，考虑将 GDM 与 DRL 结合具备潜力（可作为扩展方向见下文“扩展空间”）。
+日志/权重保存路径示例：
 
----
+- DDPG（cellfree）：`log/default/ddpg/cellfree/<timestamp>/policy.pth`
+- SAC（cellfree）：`log/default/sac/cellfree/<timestamp>/policy.pth`
+- Diffusion（cellfree）：`log/default/diffusion_opt/cellfree/<timestamp>/...`
 
-## 扩展空间（Roadmap 占位）
+如需 TensorBoard：
 
-- 新环境接入与定制
-
-  - 接入更复杂的网络优化任务（带时序状态、随机性、约束投影等）。
-- GDM 与 DRL 融合
-
-  - 例如用 GDM 生成高质量候选解，再由 DRL 策略筛选/微调，或将 GDM 作为策略先验。
-- 约束处理机制
-
-  - 探索软约束正则、可行性投影、拉格朗日乘子等方法，刻画 $g_i(x)\le0$ 的满足性。
-- 评估指标与可视化
-
-  - 增加更丰富的指标（可行率、稳定性、收敛速度等）与可视化面板。
-- 多任务/迁移学习
-
-  - 针对不同网络条件的快速自适应与跨场景泛化。
-
-（以上为占位纲要，后续将补充实现与文档）
+```powershell
+tensorboard --logdir log
+```
 
 ---
 
-## 引用
+## 5. 代码结构（摘录）
 
-如本项目或教程对您的研究有帮助，请引用以下论文：
+- 训练脚本：
+  - `script/train_ddpg.py`
+  - `script/train_sac.py`
+  - `script/train_diffusion.py`
+- 仿真：
+  - `script/simulation/simulation.py`（GUI 主程序）
+  - `script/simulation/model_prediction.py`（模型加载与推理）
+  - `script/simulation/drone_path.py`（路径规划示例）
+  - `script/simulation/sim_config.py`（仿真参数）
+- 环境：
+  - `env/cellfree/env.py`（Gymnasium 环境实现，`make_cellfree_env`）
+  - 其他环境：`env/pendulum`、`env/optimization`、`env/aigc`
+- 策略与模型：
+  - 策略：`policy/ddpg`、`policy/sac`、`policy/diffusion_opt`
+  - 模型：`model/actor.py`、`model/sac/`、`model/diffusion/`
+
+---
+
+## 6. 常见问题（FAQ）
+
+1) Gym 警告/不兼容：
+
+   - 使用 Gymnasium：`pip install gymnasium`；卸载旧 gym：`pip uninstall -y gym`。
+2) 权重下拉为空或加载失败：
+
+   - 确认已使用 `--env cellfree` 训练，并产生 `policy.pth`。
+   - 确认目录为：`log/default/<model>/cellfree/**/policy.pth`。
+3) 关闭窗口程序未退出：
+
+   - 已在仿真中绑定关闭事件并退出主循环，可直接关闭窗口结束程序。
+4) NumPy 类型错误（dtype cast）：
+
+   - 仿真中已统一为浮点坐标；如修改代码，请确保位置与增量运算使用浮点类型。
+5) PyTorch 安全加载提示：
+
+   - 我们使用 `weights_only=True`，建议使用新版本 PyTorch；如遇兼容问题可降级为常规 `torch.load(path, map_location=...)`。
+
+---
+
+## 7. 引用
+
+如本项目或教程对您的研究有帮助，请引用：
 
 ```bibtex
-
 @article{du2023beyond,
-
   title={Beyond deep reinforcement learning: A tutorial on generative diffusion models in network optimization},
-
   author={Du, Hongyang and Zhang, Ruichen and Liu, Yinqiu and Wang, Jiacheng and Lin, Yijing and Li, Zonghang and Niyato, Dusit and Kang, Jiawen and Xiong, Zehui and Cui, Shuguang and Ai, Bo and Zhou, Haibo and Kim, Dong In},
-
   journal={arXiv preprint arXiv:2308.05384},
-
   year={2023}
-
 }
-
 ```
 
 ---
 
-## 许可证
+## 8. 许可证
 
-- 网页模板与页面版权：参见页面底部说明，使用 Creative Commons Attribution-ShareAlike 4.0（CC BY-SA 4.0）协议元素（详见 [index.html](index.html) 页脚）。
-- 代码协议：待补充（占位）。
+- 网页模板与页面版权：见 [index.html](index.html) 页脚（CC BY-SA 4.0 元素）。
+- 代码许可：后续补充。
 
 ---
