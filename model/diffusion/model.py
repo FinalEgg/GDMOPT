@@ -38,8 +38,7 @@ class MLP(nn.Module):
         t = self.time_mlp(time)
         x = torch.cat([x, t, processed_state], dim=1)
         x = self.mid_layer(x)
-        # x = self.final_layer(x)
-        return x
+        return torch.sigmoid(x)  # Added sigmoid for [0,1] output
 
 
 class DoubleCritic(nn.Module):

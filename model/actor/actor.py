@@ -11,7 +11,7 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()  # Assuming actions are in [-1, 1]
+            nn.Sigmoid()  # Changed from Tanh to Sigmoid for [0,1] output
         )
 
     def forward(self, state):

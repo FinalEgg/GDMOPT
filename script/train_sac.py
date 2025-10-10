@@ -14,9 +14,8 @@ from tianshou.trainer import offpolicy_trainer
 from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
 from env import make_pendulum_env, make_optimization_env, make_cellfree_env
-from policy import DDPG
-from model.actor import Actor
-from model.diffusion import DoubleCritic
+from policy import SAC
+from model.sac import Actor, Critic, Value
 import warnings
 
 # Ignore warnings
@@ -27,7 +26,7 @@ def get_args():
     # Create argument parser
     parser = argparse.ArgumentParser()
     parser.add_argument("--exploration-noise", type=float, default=0.1)
-    parser.add_argument('--algorithm', type=str, default='ddpg')
+    parser.add_argument('--algorithm', type=str, default='sac')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--buffer-size', type=int, default=10000)#1e6
     parser.add_argument('-e', '--epoch', type=int, default=10)# 1000
@@ -50,15 +49,17 @@ def get_args():
     parser.add_argument('--lr-decay', action='store_true', default=False)
     parser.add_argument('--note', type=str, default='')
 
-    # for ddpg
+    # for sac
     parser.add_argument('--actor-lr', type=float, default=1e-4)
     parser.add_argument('--critic-lr', type=float, default=1e-4)
+    parser.add_argument('--value-lr', type=float, default=1e-4)
     parser.add_argument('--tau', type=float, default=0.005)  # for soft update
+    parser.add_argument('--alpha', type=float, default=0.2)  # temperature parameter
 
     # for prioritized experience replay
     parser.add_argument('--prioritized-replay', action='store_true', default=False)
-    parser.add_argument('--prior-alpha', type=float, default=0.4)#
-    parser.add_argument('--prior-beta', type=float, default=0.4)#
+    parser.add_argument('--prior-alpha', type=float, default=0.4)
+    parser.add_argument('--prior-beta', type=float, default=0.4)
     parser.add_argument('--env', type=str, default='optimization', choices=['pendulum', 'optimization', 'cellfree'])
     parser.add_argument('--dim', type=int, default=2)  # For optimization env
 
@@ -99,13 +100,23 @@ def main(args=get_args()):
     )
 
     # Create critic
-    critic = DoubleCritic(
+    critic = Critic(
         state_dim=args.state_shape,
         action_dim=args.action_shape
     ).to(args.device)
     critic_optim = torch.optim.AdamW(
         critic.parameters(),
         lr=args.critic_lr,
+        weight_decay=args.wd
+    )
+
+    # Create value
+    value_net = Value(
+        state_dim=args.state_shape
+    ).to(args.device)
+    value_optim = torch.optim.AdamW(
+        value_net.parameters(),
+        lr=args.value_lr,
         weight_decay=args.wd
     )
 
@@ -117,20 +128,21 @@ def main(args=get_args()):
     logger = TensorboardLogger(writer)
 
     # Define policy
-    policy = DDPG(
+    policy = SAC(
         args.state_shape,
         actor,
         actor_optim,
         args.action_shape,
         critic,
         critic_optim,
+        value_net,
+        value_optim,
         args.device,
         tau=args.tau,
         gamma=args.gamma,
-        estimation_step=args.n_step,
+        alpha=args.alpha,
         lr_decay=args.lr_decay,
         lr_maxt=args.epoch,
-        exploration_noise = args.exploration_noise,
     )
 
     # Load a previous policy if a path is provided

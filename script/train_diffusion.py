@@ -13,7 +13,7 @@ from tianshou.utils import TensorboardLogger
 from tianshou.trainer import offpolicy_trainer
 from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
-from env import make_pendulum_env, make_optimization_env
+from env import make_pendulum_env, make_optimization_env, make_cellfree_env
 from policy import DiffusionOPT
 from model.diffusion import Diffusion, MLP, DoubleCritic
 import warnings
@@ -67,7 +67,7 @@ def get_args():
 
     # for prioritized experience replay
     parser.add_argument('--prioritized-replay', action='store_true', default=False)
-    parser.add_argument('--env', type=str, default='optimization', choices=['pendulum', 'optimization'])
+    parser.add_argument('--env', type=str, default='optimization', choices=['pendulum', 'optimization', 'cellfree'])
     parser.add_argument('--dim', type=int, default=2)  # For optimization env
 
     # Parse arguments and return them
@@ -81,6 +81,8 @@ def main(args=get_args()):
         env, train_envs, test_envs = make_pendulum_env(args.training_num, args.test_num)
     elif args.env == 'optimization':
         env, train_envs, test_envs = make_optimization_env(args.training_num, args.test_num, dim=args.dim)
+    elif args.env == 'cellfree':
+        env, train_envs, test_envs = make_cellfree_env(args.training_num, args.test_num)
     args.state_shape = env.observation_space.shape[0]
     args.action_shape = env.action_space.shape[0]
     args.max_action = 1.
