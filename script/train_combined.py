@@ -5,6 +5,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pprint
 import torch
+torch.autograd.set_detect_anomaly(True)
 import numpy as np
 from datetime import datetime
 from tianshou.data import Collector, VectorReplayBuffer, PrioritizedVectorReplayBuffer
@@ -14,9 +15,9 @@ from tianshou.trainer import offpolicy_trainer
 from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
 from env import make_pendulum_env, make_optimization_env, make_cellfree_env
-from policy import DDPG
-from model.actor import Actor
-from model.diffusion import DoubleCritic
+from policy.combined import CombinedOPT
+from model.combined.combined_model import CombinedModel
+from model.diffusion.model import DoubleCritic
 import warnings
 
 # Ignore warnings
@@ -27,18 +28,18 @@ def get_args():
     # Create argument parser
     parser = argparse.ArgumentParser()
     parser.add_argument("--exploration-noise", type=float, default=0.1)
-    parser.add_argument('--algorithm', type=str, default='ddpg')
+    parser.add_argument('--algorithm', type=str, default='combined')
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--buffer-size', type=int, default=100000)#1e6
-    parser.add_argument('-e', '--epoch', type=int, default=1000)# 10000
+    parser.add_argument('--buffer-size', type=int, default=10000)#1e6
+    parser.add_argument('-e', '--epoch', type=int, default=10)# 1000
     parser.add_argument('--step-per-epoch', type=int, default=100)# 100
-    parser.add_argument('--step-per-collect', type=int, default=1000)#1000
+    parser.add_argument('--step-per-collect', type=int, default=10)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
-    parser.add_argument('--gamma', type=float, default=0.99)
+    parser.add_argument('--gamma', type=float, default=1)
     parser.add_argument('--n-step', type=int, default=3)
-    parser.add_argument('--training-num', type=int, default=10)
-    parser.add_argument('--test-num', type=int, default=10)
+    parser.add_argument('--training-num', type=int, default=1)
+    parser.add_argument('--test-num', type=int, default=1)
     parser.add_argument('--logdir', type=str, default='log')
     parser.add_argument('--log-prefix', type=str, default='default')
     parser.add_argument('--render', type=float, default=0.1)
@@ -50,15 +51,14 @@ def get_args():
     parser.add_argument('--lr-decay', action='store_true', default=False)
     parser.add_argument('--note', type=str, default='')
 
-    # for ddpg
+    # for combined
     parser.add_argument('--actor-lr', type=float, default=1e-4)
     parser.add_argument('--critic-lr', type=float, default=1e-4)
     parser.add_argument('--tau', type=float, default=0.005)  # for soft update
+    parser.add_argument('--bc-coef', default=False)
 
     # for prioritized experience replay
     parser.add_argument('--prioritized-replay', action='store_true', default=False)
-    parser.add_argument('--prior-alpha', type=float, default=0.4)#
-    parser.add_argument('--prior-beta', type=float, default=0.4)#
     parser.add_argument('--env', type=str, default='cellfree', choices=['pendulum', 'optimization', 'cellfree'])
     parser.add_argument('--dim', type=int, default=2)  # For optimization env
 
@@ -76,24 +76,27 @@ def main(args=get_args()):
     elif args.env == 'cellfree':
         env, train_envs, test_envs = make_cellfree_env(args.training_num, args.test_num)
     args.state_shape = env.observation_space.shape[0]
-    args.action_shape = env.action_space.shape[0]  # Now it's shape for Box
-    args.max_action = 1.
+    args.action_shape = env.action_space.shape[0]
+    # For cellfree, connection_dim = M*N, power_dim = M*N
+    from env.cellfree.config import M, N
+    args.connection_dim = M * N
+    args.power_dim = M * N
 
-    args.exploration_noise = args.exploration_noise * args.max_action
+    args.exploration_noise = args.exploration_noise * 1.0  # Assuming max_action=1
     # seed
     # np.random.seed(args.seed)
     # torch.manual_seed(args.seed)
     # train_envs.seed(args.seed)
     # test_envs.seed(args.seed)
 
-    # create actor
-    actor_net = Actor(
+    # create combined model
+    combined_model = CombinedModel(
         state_dim=args.state_shape,
-        action_dim=args.action_shape
-    )
-    actor = actor_net.to(args.device)
-    actor_optim = torch.optim.AdamW(
-        actor.parameters(),
+        connection_dim=args.connection_dim,
+        power_dim=args.power_dim
+    ).to(args.device)
+    combined_optim = torch.optim.AdamW(
+        combined_model.parameters(),
         lr=args.actor_lr,
         weight_decay=args.wd
     )
@@ -117,11 +120,12 @@ def main(args=get_args()):
     logger = TensorboardLogger(writer)
 
     # Define policy
-    policy = DDPG(
+    policy = CombinedOPT(
         args.state_shape,
-        actor,
-        actor_optim,
-        args.action_shape,
+        combined_model,
+        combined_optim,
+        args.connection_dim,
+        args.power_dim,
         critic,
         critic_optim,
         args.device,
@@ -130,6 +134,8 @@ def main(args=get_args()):
         estimation_step=args.n_step,
         lr_decay=args.lr_decay,
         lr_maxt=args.epoch,
+        bc_coef=args.bc_coef,
+        action_space=env.action_space,
         exploration_noise = args.exploration_noise,
     )
 
@@ -178,7 +184,8 @@ def main(args=get_args()):
         pprint.pprint(result)
 
     # Watch the performance
-    if args.watch:
+    # python main.py --watch --resume-path log/default/combined/Jul10-142653/policy.pth
+    if __name__ == '__main__':
         policy.eval()
         collector = Collector(policy, env)
         result = collector.collect(n_episode=1) #, render=args.render

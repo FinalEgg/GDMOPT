@@ -12,26 +12,14 @@
 
 ## 1. 安装与环境（Windows / PowerShell）
 
-推荐使用 Python 3.8–3.10，并创建虚拟环境：
+推荐使用 Python 3.9：
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-
-# 基础依赖
-pip install torch
-pip install tianshou==0.4.11
-pip install gymnasium matplotlib scipy
-
-# 如需 TensorBoard（可选）
-pip install tensorboard
+除了requirement.txt之外，需要安装：
+torchaudio==2.4.1+cu124
+torchvision==0.19.1+cu124
+```cmd
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 ```
-
-注意：
-
-- 项目已迁移至 Gymnasium，请避免安装旧版 gym；若已安装可卸载：`pip uninstall -y gym`。
-- Tkinter 多数环境自带；若缺失请根据系统安装。
 
 ---
 

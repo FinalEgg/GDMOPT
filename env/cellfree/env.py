@@ -2,7 +2,7 @@ import gymnasium as gym
 from gymnasium.spaces import Box
 from tianshou.env import DummyVectorEnv
 import numpy as np
-from .config import X, Y, H, M, N, P, STEPS_PER_EPISODE, NOISE_POWER, CARRIER_FREQUENCY, PATH_LOSS_EXPONENT
+from .config import X, Y, H, M, N, P, pd, pu, TAU_P, ALPHA1, ALPHA2, XI1, XI2, CAPACITY_THRESHOLD, REWARD_VALUE, STEPS_PER_EPISODE, NOISE_POWER, CARRIER_FREQUENCY, PATH_LOSS_EXPONENT
 
 class CellFreeEnv(gym.Env):
 
@@ -10,24 +10,24 @@ class CellFreeEnv(gym.Env):
         self._num_steps = 0
         self._terminated = False
 
-        # Initialize base station positions (uniformly distributed)
-        self.bs_positions = np.random.uniform(0, [X, Y, 0], (M, 3))  # [x, y, z] for each BS
+        # 初始化基站位置（均匀分布）
+        self.bs_positions = np.random.uniform(0, [X, Y], (M, 2))  # 每个基站的 [x, y]
 
-        # Initialize UAV positions (uniformly distributed in 3D space)
-        self.uav_positions = np.random.uniform(0, [X, Y, H], (N, 3))  # [x, y, z] for each UAV
+        # 初始化无人机位置（在3D空间中均匀分布，更靠近地面以减少距离）
+        self.uav_positions = np.random.uniform(0, [X, Y, H/2], (N, 3))  # 每个无人机的 [x, y, z]，z限制在0-H/2
 
-        # Observation space: positions of BS and UAVs, and current connections
-        # BS positions (M*3), UAV positions (N*3), connection matrix (M*N), power allocation (M*N)
-        obs_dim = M*3 + N*3 + M*N + M*N
+        # 观测空间：基站和无人机的位置
+        # 基站位置 (M*2), 无人机位置 (N*3)
+        obs_dim = M*2 + N*3
         self._observation_space = Box(low=0, high=max(X, Y, H), shape=(obs_dim,))
 
-        # Action space: connection decisions (M*N) + power allocations (M*N), all in [0,1]
+        # 动作空间：连接决策 (M*N) + 功率分配 (M*N), 所有在 [0,1] 范围内
         action_dim = 2 * M * N
         self._action_space = Box(low=0, high=1, shape=(action_dim,))
 
         self._steps_per_episode = STEPS_PER_EPISODE
 
-        # Initialize connection and power matrices
+        # 初始化连接和功率矩阵
         self.connection_matrix = np.zeros((M, N))
         self.power_matrix = np.zeros((M, N))
 
@@ -41,30 +41,28 @@ class CellFreeEnv(gym.Env):
 
     @property
     def state(self):
-        # State includes: BS positions, UAV positions, connection matrix, power matrix
+        # 状态包括：基站位置，无人机位置
         bs_flat = self.bs_positions.flatten()
         uav_flat = self.uav_positions.flatten()
-        conn_flat = self.connection_matrix.flatten()
-        power_flat = self.power_matrix.flatten()
-        return np.concatenate([bs_flat, uav_flat, conn_flat, power_flat])
+        return np.concatenate([bs_flat, uav_flat])
 
     def step(self, action):
         assert not self._terminated, "Episode has terminated"
 
-        # Parse action: first M*N for connections, next M*N for power allocations
+        # 解析动作：前 M*N 为连接，后 M*N 为功率分配
         connection_actions = action[:M*N].reshape(M, N)
         power_actions = action[M*N:].reshape(M, N)
 
-        # Update connection matrix: >0.8 means connected
+        # 更新连接矩阵：>0.8 表示连接
         self.connection_matrix = (connection_actions > 0.8).astype(float)
 
-        # Update power matrix: actual power = P * power_actions
-        self.power_matrix = P * power_actions
+        # 更新功率矩阵：功率系数 = power_actions
+        self.power_matrix = power_actions
 
-        # Calculate reward
+        # 计算奖励
         reward = self._calculate_reward()
 
-        # Update UAV positions (simple random movement for simulation)
+        # 更新无人机位置（简单随机移动用于模拟）
         self._update_uav_positions()
 
         self._num_steps += 1
@@ -81,33 +79,104 @@ class CellFreeEnv(gym.Env):
         self._num_steps = 0
         self._terminated = False
 
-        # Reinitialize positions
-        self.bs_positions = np.random.uniform(0, [X, Y, 0], (M, 3))
-        self.uav_positions = np.random.uniform(0, [X, Y, H], (N, 3))
+        # 重新初始化位置
+        self.bs_positions = np.random.uniform(0, [X, Y], (M, 2))
+        self.uav_positions = np.random.uniform(0, [X, Y, H/2], (N, 3))
         self.connection_matrix = np.zeros((M, N))
         self.power_matrix = np.zeros((M, N))
 
         return self.state, {'num_steps': self._num_steps}
 
     def _calculate_reward(self):
-        # Temporary: return fixed reward
-        # In future, implement actual reward based on throughput, interference, etc.
-        return 1.0
+        total_capacity = 0
+        for k in range(N):  # 对于每个无人机 k
+            # 找到 Ak：服务无人机 k 的基站（已连接）
+            Ak = np.where(self.connection_matrix[:, k] == 1)[0]
+            if len(Ak) == 0:
+                continue
+            # 计算信号功率（无人机 k 的期望信号）
+            signal = 0
+            for m in Ak:
+                bs_pos = self.bs_positions[m]
+                uav_pos = self.uav_positions[k]
+                # 基站 m 和无人机 k 之间的水平距离
+                Rmk = np.linalg.norm(bs_pos - uav_pos[:2])
+                # 基站 m 和无人机 k 之间的高度差
+                Hmk = uav_pos[2]  # 基站假设在 z=0
+                # 基站 m 和无人机 k 之间的 3D 欧氏距离
+                Dmk = np.linalg.norm(np.concatenate([bs_pos, [0]]) - uav_pos)
+                # 仰角（度）
+                theta_mk = np.degrees(np.arctan2(Hmk, Rmk + 1e-8))
+                # 视线（LoS）链路的概率
+                PmkL = 1 / (1 + XI1 * np.exp(-XI2 * (theta_mk - XI1)))
+                # 大尺度衰落均值（线性尺度）
+                beta_mk = PmkL * Dmk**(-ALPHA1) + (1 - PmkL) * Dmk**(-ALPHA2)
+                # 估计信道功率（MMSE 估计）
+                gamma_mk = TAU_P * pu * beta_mk**2 / (TAU_P * pu * beta_mk + 1)
+                # 功率控制系数
+                eta_mk = self.power_matrix[m, k]
+                # 累加信号贡献
+                signal += np.sqrt(eta_mk) * gamma_mk
+            # SINR 的分子：期望信号功率
+            numerator = pd * signal**2
+            # 计算干扰功率
+            interference = 0
+            for m in Ak:  # 遍历服务用户 k 的基站 m
+                bs_pos = self.bs_positions[m]  # 获取基站 m 的位置
+                uav_pos = self.uav_positions[k]  # 获取用户 k 的位置
+                # 计算基站 m 和用户 k 之间的水平距离（用于仰角计算）
+                Rmk_intf = np.linalg.norm(bs_pos - uav_pos[:2])
+                # 计算基站 m 和用户 k 之间的 3D 欧氏距离
+                Dmk_intf = np.linalg.norm(np.concatenate([bs_pos, [0]]) - uav_pos)
+                # 计算仰角（度），用于 LoS 概率
+                theta_mk_intf = 180 / np.pi * np.arctan(uav_pos[2] / Rmk_intf)
+                # 计算 LoS 链路概率
+                PmkL_intf = 1 / (1 + XI1 * np.exp(-XI2 * (theta_mk_intf - XI1)))
+                # 计算大尺度衰落均值（线性尺度），针对 m 和 k
+                beta_mk = PmkL_intf * Dmk_intf**(-ALPHA1) + (1 - PmkL_intf) * Dmk_intf**(-ALPHA2)
+                for kp in range(N):  # 遍历所有用户 kp
+                    if self.connection_matrix[m, kp] == 1:  # 如果基站 m 连接到用户 kp
+                        uav_pos_p = self.uav_positions[kp]  # 获取用户 kp 的位置
+                        # 计算基站 m 和用户 kp 之间的水平距离
+                        Rmp = np.linalg.norm(bs_pos - uav_pos_p[:2])
+                        # 计算基站 m 和用户 kp 之间的 3D 距离
+                        Dmp = np.linalg.norm(np.concatenate([bs_pos, [0]]) - uav_pos_p)
+                        # 计算仰角（度）
+                        theta_mp = 180 / np.pi * np.arctan(uav_pos_p[2] / Rmp)
+                        # 计算 LoS 概率
+                        PmpL = 1 / (1 + XI1 * np.exp(-XI2 * (theta_mp - XI1)))
+                        # 计算大尺度衰落（针对 m 和 kp）
+                        beta_mp_temp = PmpL * Dmp**(-ALPHA1) + (1 - PmpL) * Dmp**(-ALPHA2)
+                        # 计算估计信道功率（MMSE 估计），针对 m 和 kp
+                        gamma_mp = TAU_P * pu * beta_mp_temp**2 / (TAU_P * pu * beta_mp_temp + 1)
+                        # 获取功率系数（针对 m 和 kp）
+                        eta_mp = self.power_matrix[m, kp]
+                        # 累加干扰功率：使用 beta_mk（针对接收者 k）和 gamma_mp（针对发送者 kp）
+                        interference += eta_mp * gamma_mp * beta_mk
+            # SINR 的分母：干扰 + 噪声
+            denominator = pd * interference + 1
+            # 信干噪比
+            SINR_k = numerator / denominator
+            # 可达下行速率（信道容量，单位：bits/symbol）
+            C_k = np.log2(1 + SINR_k)
+            # 累加总容量
+            total_capacity += C_k
+        return total_capacity
 
     def _update_uav_positions(self):
-        # Simple random movement for UAVs
-        movement = np.random.normal(0, 10, (N, 3))  # Small random movements
+        # 无人机的简单随机移动
+        movement = np.random.normal(0, 10, (N, 3))  # 小随机移动
         self.uav_positions += movement
-        # Keep within bounds
-        self.uav_positions = np.clip(self.uav_positions, 0, [X, Y, H])
+        # 保持在边界内
+        self.uav_positions = np.clip(self.uav_positions, 0, [X, Y, H/2])
 
     def seed(self, seed=None):
         np.random.seed(seed)
 
 
 def make_cellfree_env(training_num=0, test_num=0):
-    """Wrapper function for Cell-free UAV env.
-    :return: a tuple of (single env, training envs, test envs).
+    """Cell-free UAV 环境的包装函数。
+    :return: 一个元组 (单个环境, 训练环境, 测试环境)。
     """
     env = CellFreeEnv()
     env.seed(0)

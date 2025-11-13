@@ -34,7 +34,7 @@ class DDPG(BasePolicy):
         assert 0.0 <= gamma <= 1.0, "gamma should be in [0, 1]"
 
         # Initialize actor network and optimizer if provided
-        if actor is not None and actor_optim is not None:
+        if actor is not None:
             self._actor: torch.nn.Module = actor  # Actor network
             self._target_actor = deepcopy(actor)  # Target actor network
             self._target_actor.eval()
@@ -42,7 +42,7 @@ class DDPG(BasePolicy):
             self._action_dim = action_dim
 
         # Initialize critic network and optimizer if provided
-        if critic is not None and critic_optim is not None:
+        if critic is not None:
             self._critic: torch.nn.Module = critic  # Critic network
             self._target_critic = deepcopy(critic)  # Target critic network
             self._target_critic.eval()
@@ -69,15 +69,17 @@ class DDPG(BasePolicy):
         """Set the module in training mode, except for the target networks."""
         self.training = mode
         self._actor.train(mode)
-        self._critic.train(mode)
+        if hasattr(self, '_critic'):
+            self._critic.train(mode)
         return self
 
     def sync_weight(self) -> None:
         """Soft-update the target network."""
         for o, n in zip(self._target_actor.parameters(), self._actor.parameters()):
             o.data.copy_(o.data * (1.0 - self._tau) + n.data * self._tau)
-        for o, n in zip(self._target_critic.parameters(), self._critic.parameters()):
-            o.data.copy_(o.data * (1.0 - self._tau) + n.data * self._tau)
+        if hasattr(self, '_target_critic'):
+            for o, n in zip(self._target_critic.parameters(), self._critic.parameters()):
+                o.data.copy_(o.data * (1.0 - self._tau) + n.data * self._tau)
 
     def _target_q(self, buffer: ReplayBuffer, indices: np.ndarray) -> torch.Tensor:
         batch = buffer[indices]  # batch.obs_next: s_{t+n}
