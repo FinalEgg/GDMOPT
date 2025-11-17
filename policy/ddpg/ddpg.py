@@ -114,19 +114,23 @@ class DDPG(BasePolicy):
         
         # Critic update
         current_q1, current_q2 = self._critic(obs, act)
+        current_q1 = torch.clamp(current_q1, -100, 100)  # edit: Q-value clipping for regularization
+        current_q2 = torch.clamp(current_q2, -100, 100)  # edit: Q-value clipping for regularization
         target_q = batch.returns
         critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
 
         self._critic_optim.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self._critic.parameters(), 1.0)  # edit: gradient clipping for regularization
         self._critic_optim.step()
 
         # Actor update
         act_new = self._actor(obs)
-        actor_loss = -self._critic(obs, act_new)[0].mean()  # Use q1 for actor update
+        actor_loss = -torch.min(*self._critic(obs, act_new)).mean()  # Use min(q1, q2) for actor update edit
 
         self._actor_optim.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self._actor.parameters(), 1.0)  # edit: gradient clipping for regularization
         self._actor_optim.step()
 
         # Soft update

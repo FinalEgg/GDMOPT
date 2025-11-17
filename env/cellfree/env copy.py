@@ -68,6 +68,9 @@ class CellFreeEnv(gym.Env):
         # 计算奖励
         reward = self._calculate_reward()
 
+        # 更新无人机位置（简单随机移动用于模拟）
+        self._update_uav_positions()
+
         self._num_steps += 1
         if self._num_steps >= self._steps_per_episode:
             self._terminated = True
@@ -162,8 +165,6 @@ class CellFreeEnv(gym.Env):
             SINR_k = numerator / denominator
             # 可达下行速率（信道容量，单位：bits/symbol）
             C_k = np.log2(1 + SINR_k)
-            C_k = min(C_k, 10)  # 上限
-            C_k = max(C_k, 0)     # 下限（虽不必要）
             # 累加总容量
             total_capacity += C_k
         return total_capacity

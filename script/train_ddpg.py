@@ -31,12 +31,12 @@ def get_args():
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--buffer-size', type=int, default=100000)#1e6
     parser.add_argument('-e', '--epoch', type=int, default=1000)# 10000
-    parser.add_argument('--step-per-epoch', type=int, default=100)# 100
+    parser.add_argument('--step-per-epoch', type=int, default=1)# 100
     parser.add_argument('--step-per-collect', type=int, default=1000)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
-    parser.add_argument('--wd', type=float, default=1e-4)
-    parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--n-step', type=int, default=3)
+    parser.add_argument('--wd', type=float, default=1e-3)  # edit: increase weight decay for regularization
+    parser.add_argument('--gamma', type=float, default=0)
+    parser.add_argument('--n-step', type=int, default=1)
     parser.add_argument('--training-num', type=int, default=10)
     parser.add_argument('--test-num', type=int, default=10)
     parser.add_argument('--logdir', type=str, default='log')
@@ -47,13 +47,13 @@ def get_args():
         '--device', type=str, default='cuda:0')
     parser.add_argument('--resume-path', type=str, default=None)
     parser.add_argument('--watch', action='store_true', default=False)
-    parser.add_argument('--lr-decay', action='store_true', default=False)
+    parser.add_argument('--lr-decay', action='store_true', default=True)  # edit: enable lr decay for regularization
     parser.add_argument('--note', type=str, default='')
 
     # for ddpg
     parser.add_argument('--actor-lr', type=float, default=1e-4)
     parser.add_argument('--critic-lr', type=float, default=1e-4)
-    parser.add_argument('--tau', type=float, default=0.005)  # for soft update
+    parser.add_argument('--tau', type=float, default=1.0)  # for soft update
 
     # for prioritized experience replay
     parser.add_argument('--prioritized-replay', action='store_true', default=False)

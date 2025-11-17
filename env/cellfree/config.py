@@ -6,8 +6,8 @@ Y = 100  # Width of the area (meters)
 H = 50   # Height of the area (meters)
 
 # Network components
-M = 4    # Number of ground base stations
-N = 3    # Number of UAVs
+M = 5    # Number of ground base stations
+N = 10    # Number of UAVs
 
 # Power parameters
 P = 50   # Maximum transmit power per base station (Watts)
@@ -31,4 +31,4 @@ CARRIER_FREQUENCY = 2.4e9  # Carrier frequency (Hz)
 PATH_LOSS_EXPONENT = 2.0   # Path loss exponent
 
 # Episode parameters
-STEPS_PER_EPISODE = 100
+STEPS_PER_EPISODE = 1

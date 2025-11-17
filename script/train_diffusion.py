@@ -28,10 +28,10 @@ def get_args():
     parser.add_argument("--exploration-noise", type=float, default=0.1)
     parser.add_argument('--algorithm', type=str, default='diffusion_opt')
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--buffer-size', type=int, default=10000)#1e6
-    parser.add_argument('-e', '--epoch', type=int, default=10)# 10000
+    parser.add_argument('--buffer-size', type=int, default=100000)#1e6
+    parser.add_argument('-e', '--epoch', type=int, default=1000)# 10000
     parser.add_argument('--step-per-epoch', type=int, default=100)# 100
-    parser.add_argument('--step-per-collect', type=int, default=10)#1000
+    parser.add_argument('--step-per-collect', type=int, default=1000)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=1)

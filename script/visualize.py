@@ -96,13 +96,15 @@ def load_model(algorithm, run_name, env_name, state_dim, action_dim):
             beta_schedule='vp'
         )
         critic = DoubleCritic(state_dim=state_dim, action_dim=action_dim)
+        # Provide dummy optimizer for inference
+        dummy_optim = torch.optim.SGD(actor.parameters(), lr=0.01)
         policy = DiffusionOPT(
             state_dim=state_dim,
             actor=actor,
-            actor_optim=None,
+            actor_optim=dummy_optim,  # Dummy optimizer
             action_dim=action_dim,
             critic=critic,
-            critic_optim=None,
+            critic_optim=dummy_optim,  # Dummy optimizer
             device='cpu',
             tau=0.005,
             gamma=1.0
@@ -119,12 +121,6 @@ def load_model(algorithm, run_name, env_name, state_dim, action_dim):
 
     policy.eval()
     return policy
-
-def generate_random_state():
-    """生成随机状态"""
-    env = CellFreeEnv()
-    state, _ = env.reset()
-    return state, env.bs_positions, env.uav_positions
 
 def infer_actions(policy, algorithm, state):
     """使用模型推测动作"""
@@ -147,6 +143,18 @@ def infer_actions(policy, algorithm, state):
             connection_actions = (actions[:M*N] > 0.5).reshape(M, N).astype(float)
             power_actions = actions[M*N:].reshape(M, N)
     return connection_actions, power_actions
+
+def generate_random_state():
+    """生成随机状态"""
+    env = CellFreeEnv()
+    state, _ = env.reset()
+    return state, env.bs_positions, env.uav_positions
+
+def calculate_reward_from_actions(env, connection_actions, power_actions):
+    """根据动作计算奖励"""
+    env.connection_matrix = (connection_actions > 0.8).astype(float)
+    env.power_matrix = power_actions
+    return env._calculate_reward()
 
 def visualize(bs_positions, uav_positions, connection_actions, power_actions):
     """可视化"""
@@ -211,6 +219,21 @@ def main():
     connection_actions, power_actions = infer_actions(policy, args.algorithm, state)
     print(f"Connection actions shape: {connection_actions.shape}")
     print(f"Power actions shape: {power_actions.shape}")
+
+    # 打印详细动作矩阵
+    print("\nConnection Actions (BS-UAV matrix):")
+    for m in range(M):
+        row = [f"{connection_actions[m, n]:.2f}" for n in range(N)]
+        print(f"BS{m}: {' '.join(row)}")
+
+    print("\nPower Actions (BS-UAV matrix):")
+    for m in range(M):
+        row = [f"{power_actions[m, n]:.2f}" for n in range(N)]
+        print(f"BS{m}: {' '.join(row)}")
+
+    # 计算并打印奖励
+    reward = calculate_reward_from_actions(env, connection_actions, power_actions)
+    print(f"\nPredicted Reward: {reward}")
 
     # 可视化
     visualize(bs_positions, uav_positions, connection_actions, power_actions)

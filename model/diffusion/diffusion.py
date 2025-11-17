@@ -108,7 +108,7 @@ class Diffusion(nn.Module):
         x_recon = self.predict_start_from_noise(x, t=t, noise=self.model(x, t, s))
 
         if self.clip_denoised:
-            x_recon.clamp_(-self.max_action, self.max_action)
+            x_recon = ((torch.tanh(x_recon) + 1) / 2) * self.max_action
         else:
             assert RuntimeError()
 
@@ -174,9 +174,8 @@ class Diffusion(nn.Module):
         batch_size = state.shape[0]
         shape = (batch_size, self.action_dim)
         action = self.p_sample_loop(state, shape, *args, **kwargs)
-        # Clamping the actions to be between -max_action and max_action
-        return action.clamp_(-self.max_action, self.max_action)
-        # return action
+        # 使用 tanh 进行柔和剪切到 [0, max_action]
+        return ((torch.tanh(action) + 1) / 2) * self.max_action
 
     # ------------------------------------------ training ------------------------------------------#
     # Define the sampling method for the posterior distribution

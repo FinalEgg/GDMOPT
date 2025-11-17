@@ -17,7 +17,10 @@ class MLP(nn.Module):
         self.state_mlp = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             _act(),
-            nn.Linear(hidden_dim, hidden_dim)
+            nn.Dropout(0.1),  # 添加 Dropout
+            nn.Linear(hidden_dim, hidden_dim),
+            _act(),
+            nn.Dropout(0.1)  # 添加 Dropout
         )
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(t_dim),
@@ -28,17 +31,27 @@ class MLP(nn.Module):
         self.mid_layer = nn.Sequential(
             nn.Linear(hidden_dim + action_dim + t_dim, hidden_dim),
             _act(),
+            nn.Dropout(0.1),  # 添加 Dropout
             nn.Linear(hidden_dim, hidden_dim),
             _act(),
+            nn.Dropout(0.1),  # 添加 Dropout
             nn.Linear(hidden_dim, action_dim)
         )
+        # 改进权重初始化
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
 
     def forward(self, x, time, state):
         processed_state = self.state_mlp(state)
         t = self.time_mlp(time)
         x = torch.cat([x, t, processed_state], dim=1)
         x = self.mid_layer(x)
-        return torch.sigmoid(x)  # Added sigmoid for [0,1] output
+        return torch.sigmoid(x)  # 输出 [0,1]
 
 
 class DoubleCritic(nn.Module):
@@ -55,18 +68,27 @@ class DoubleCritic(nn.Module):
         self.state_mlp = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             _act(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
+            nn.Linear(hidden_dim, hidden_dim),
+            _act()
+        )  # edit: remove Dropout for regularization
         self.q1_net = nn.Sequential(nn.Linear(hidden_dim + action_dim, hidden_dim),
                                       _act(),
                                       nn.Linear(hidden_dim, hidden_dim),
                                       _act(),
-                                      nn.Linear(hidden_dim, 1))
+                                      nn.Linear(hidden_dim, 1))  # edit: remove Dropout for regularization
         self.q2_net = nn.Sequential(nn.Linear(hidden_dim + action_dim, hidden_dim),
                                       _act(),
                                       nn.Linear(hidden_dim, hidden_dim),
                                       _act(),
-                                      nn.Linear(hidden_dim, 1))
+                                      nn.Linear(hidden_dim, 1))  # edit: remove Dropout for regularization
+        # 改进权重初始化
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
     # def forward(self, obs):
     #     return self.q1_net(obs), self.q2_net(obs)
     #
