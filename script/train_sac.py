@@ -15,7 +15,7 @@ from torch.distributions import Independent, Normal
 from tianshou.exploration import GaussianNoise
 from env import make_pendulum_env, make_optimization_env, make_cellfree_env
 from policy import SAC
-from model.sac import Actor, Critic, Value
+from model.sac import Actor, DuelingCritic
 import warnings
 
 # Ignore warnings
@@ -28,20 +28,20 @@ def get_args():
     parser.add_argument("--exploration-noise", type=float, default=0.1)
     parser.add_argument('--algorithm', type=str, default='sac')
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--buffer-size', type=int, default=10000)#1e6
-    parser.add_argument('-e', '--epoch', type=int, default=10)# 1000
+    parser.add_argument('--buffer-size', type=int, default=1e6)#1e6
+    parser.add_argument('-e', '--epoch', type=int, default=1000)# 1000
     parser.add_argument('--step-per-epoch', type=int, default=100)# 100
-    parser.add_argument('--step-per-collect', type=int, default=10)#1000
+    parser.add_argument('--step-per-collect', type=int, default=1000)#1000
     parser.add_argument('-b', '--batch-size', type=int, default=512)
     parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--n-step', type=int, default=3)
+    parser.add_argument('--n-step', type=int, default=1)
     parser.add_argument('--training-num', type=int, default=10)
     parser.add_argument('--test-num', type=int, default=10)
     parser.add_argument('--logdir', type=str, default='log')
     parser.add_argument('--log-prefix', type=str, default='default')
     parser.add_argument('--render', type=float, default=0.1)
-    parser.add_argument('--rew-norm', type=int, default=0)
+    parser.add_argument('--rew-norm', type=int, default=1)
     parser.add_argument(
         '--device', type=str, default='cuda:0')
     parser.add_argument('--resume-path', type=str, default=None)
@@ -50,8 +50,8 @@ def get_args():
     parser.add_argument('--note', type=str, default='')
 
     # for sac
-    parser.add_argument('--actor-lr', type=float, default=1e-4)
-    parser.add_argument('--critic-lr', type=float, default=1e-4)
+    parser.add_argument('--actor-lr', type=float, default=1e-5)
+    parser.add_argument('--critic-lr', type=float, default=1e-5)
     parser.add_argument('--value-lr', type=float, default=1e-4)
     parser.add_argument('--tau', type=float, default=0.005)  # for soft update
     parser.add_argument('--alpha', type=float, default=0.2)  # temperature parameter
@@ -60,7 +60,7 @@ def get_args():
     parser.add_argument('--prioritized-replay', action='store_true', default=False)
     parser.add_argument('--prior-alpha', type=float, default=0.4)
     parser.add_argument('--prior-beta', type=float, default=0.4)
-    parser.add_argument('--env', type=str, default='optimization', choices=['pendulum', 'optimization', 'cellfree'])
+    parser.add_argument('--env', type=str, default='cellfree', choices=['pendulum', 'optimization', 'cellfree'])
     parser.add_argument('--dim', type=int, default=2)  # For optimization env
 
     # Parse arguments and return them
@@ -100,23 +100,13 @@ def main(args=get_args()):
     )
 
     # Create critic
-    critic = Critic(
+    critic = DuelingCritic(
         state_dim=args.state_shape,
         action_dim=args.action_shape
     ).to(args.device)
     critic_optim = torch.optim.AdamW(
         critic.parameters(),
         lr=args.critic_lr,
-        weight_decay=args.wd
-    )
-
-    # Create value
-    value_net = Value(
-        state_dim=args.state_shape
-    ).to(args.device)
-    value_optim = torch.optim.AdamW(
-        value_net.parameters(),
-        lr=args.value_lr,
         weight_decay=args.wd
     )
 
@@ -135,12 +125,12 @@ def main(args=get_args()):
         args.action_shape,
         critic,
         critic_optim,
-        value_net,
-        value_optim,
         args.device,
         tau=args.tau,
         gamma=args.gamma,
         alpha=args.alpha,
+        reward_normalization=bool(args.rew_norm),
+        estimation_step=args.n_step,
         lr_decay=args.lr_decay,
         lr_maxt=args.epoch,
     )

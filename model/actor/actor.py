@@ -13,7 +13,7 @@ class Actor(nn.Module):
             nn.LayerNorm(hidden_dim),  # edit: replace BatchNorm with LayerNorm for regularization
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()  # 改为 Tanh
+            nn.Sigmoid()  # 改为 Sigmoid
         )
         # 改进权重初始化
         self.apply(self._init_weights)
@@ -25,5 +25,5 @@ class Actor(nn.Module):
                 nn.init.constant_(module.bias, 0.0)
 
     def forward(self, state):
-        # Tanh 输出 [-1,1]，缩放到 [0,1]
-        return (self.net(state) + 1) / 2
+        # Sigmoid 输出 [0,1]
+        return self.net(state)

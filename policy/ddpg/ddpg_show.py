@@ -28,11 +28,15 @@ class DDPG(BasePolicy):
             lr_decay: bool = False,
             lr_maxt: int = 1000,
             exploration_noise: float = 0.1,
+            debug_file: Optional[str] = None,
             **kwargs: Any
     ) -> None:
         super().__init__(**kwargs)
         assert 0.0 <= tau <= 1.0, "tau should be in [0, 1]"
         assert 0.0 <= gamma <= 1.0, "gamma should be in [0, 1]"
+
+        self.debug_file = debug_file
+        self.layer_outputs = [] if debug_file else None
 
         # Initialize actor network and optimizer if provided
         if actor is not None:
@@ -41,6 +45,14 @@ class DDPG(BasePolicy):
             self._target_actor.eval()
             self._actor_optim: torch.optim.Optimizer = actor_optim
             self._action_dim = action_dim
+
+            if self.debug_file:
+                def hook_fn(module, input, output):
+                    self.layer_outputs.append(output.detach().cpu().numpy())
+
+                # Register hooks on actor layers
+                for layer in self._actor.net:
+                    layer.register_forward_hook(hook_fn)
 
         # Initialize critic network and optimizer if provided
         if critic is not None:
@@ -106,6 +118,24 @@ class DDPG(BasePolicy):
         """Compute action over the given batch data."""
         obs = to_torch(batch.obs, device=self._device).float()
         act = self._actor(obs)
+
+        if self.debug_file:
+            with open(self.debug_file, 'w') as f:
+                f.write("Actor Weights Summary:\n")
+                for name, param in self._actor.named_parameters():
+                    f.write(f"{name}: shape {param.shape}, mean {param.data.mean().item():.4f}, std {param.data.std().item():.4f}\n")
+                f.write("\nInput obs:\n")
+                f.write(f"Shape: {obs.shape}\n")
+                f.write(f"Values: {obs.detach().cpu().numpy()}\n")
+                f.write("\nLayer Outputs:\n")
+                for i, output in enumerate(self.layer_outputs):
+                    f.write(f"Layer {i}: shape {output.shape}\n")
+                    f.write(f"Values: {output}\n")
+                f.write("\nActor output act:\n")
+                f.write(f"Shape: {act.shape}\n")
+                f.write(f"Values: {act.detach().cpu().numpy()}\n")
+            self.layer_outputs = []  # Reset for next call
+
         return Batch(act=act, state=state)
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:

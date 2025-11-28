@@ -7,7 +7,7 @@ H = 50   # Height of the area (meters)
 
 # Network components
 M = 5    # Number of ground base stations
-N = 10    # Number of UAVs
+N = 5    # Number of UAVs
 
 # Power parameters
 P = 50   # Maximum transmit power per base station (Watts)

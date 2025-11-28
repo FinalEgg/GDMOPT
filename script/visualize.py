@@ -30,6 +30,7 @@ def get_args():
 def load_model(algorithm, run_name, env_name, state_dim, action_dim):
     """根据算法类型加载模型"""
     log_path = f'log/default/{algorithm}/{env_name}/{run_name}/policy.pth'
+    debug_file = os.path.join(os.path.dirname(log_path), 'debug_output.txt')
 
     if algorithm == 'combined':
         from model.combined.combined_model import CombinedModel
@@ -52,19 +53,22 @@ def load_model(algorithm, run_name, env_name, state_dim, action_dim):
             device='cpu'
         )
     elif algorithm == 'ddpg':
-        from policy.ddpg.ddpg import DDPG
+        from policy.ddpg.ddpg_show import DDPG
         from model.actor.actor import Actor
+        from model.diffusion.model import DoubleCritic
         actor = Actor(state_dim, action_dim)
+        critic = DoubleCritic(state_dim, action_dim)
         policy = DDPG(
             state_dim=state_dim,
             actor=actor,
             actor_optim=None,
             action_dim=action_dim,
-            critic=None,
+            critic=critic,
             critic_optim=None,
             tau=0.005,
             gamma=1.0,
-            device='cpu'
+            device='cpu',
+            debug_file=debug_file
         )
     elif algorithm == 'sac':
         from policy.sac.sac import SAC
@@ -135,13 +139,14 @@ def infer_actions(policy, algorithm, state):
             connection_actions = actions[:M*N].reshape(M, N)
             power_actions = actions[M*N:].reshape(M, N)
         else:
-            # 对于其他算法，动作是连续的
+            # 对于其他算法，动作是功率矩阵
             batch = Batch(obs=state_tensor)
             result = policy.forward(batch)
             actions = result.act.squeeze(0).numpy()
-            # 假设动作是功率，连接基于阈值
-            connection_actions = (actions[:M*N] > 0.5).reshape(M, N).astype(float)
-            power_actions = actions[M*N:].reshape(M, N)
+            # 动作是功率矩阵 (M*N)
+            power_actions = actions.reshape(M, N)
+            # 连接基于功率阈值 0.2
+            connection_actions = (power_actions > 0.2).astype(float)
     return connection_actions, power_actions
 
 def generate_random_state():
@@ -152,8 +157,13 @@ def generate_random_state():
 
 def calculate_reward_from_actions(env, connection_actions, power_actions):
     """根据动作计算奖励"""
-    env.connection_matrix = (connection_actions > 0.8).astype(float)
+    env.connection_matrix = connection_actions
     env.power_matrix = power_actions
+    # 归一化功率分配：每个基站的总功率分配之和为1
+    for m in range(M):
+        total_power = np.sum(env.power_matrix[m, :])
+        if total_power > 0:
+            env.power_matrix[m, :] /= total_power
     return env._calculate_reward()
 
 def visualize(bs_positions, uav_positions, connection_actions, power_actions):

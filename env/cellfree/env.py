@@ -16,13 +16,13 @@ class CellFreeEnv(gym.Env):
         # 初始化无人机位置（在3D空间中均匀分布，更靠近地面以减少距离）
         self.uav_positions = np.random.uniform(0, [X, Y, H/2], (N, 3))  # 每个无人机的 [x, y, z]，z限制在0-H/2
 
-        # 观测空间：基站和无人机的位置
-        # 基站位置 (M*2), 无人机位置 (N*3)
-        obs_dim = M*2 + N*3
+        # 观测空间：邻接矩阵 (M*N*2)
+        # 每个基站到每个无人机的距离和仰角
+        obs_dim = M * N * 2
         self._observation_space = Box(low=0, high=max(X, Y, H), shape=(obs_dim,))
 
-        # 动作空间：连接决策 (M*N) + 功率分配 (M*N), 所有在 [0,1] 范围内
-        action_dim = 2 * M * N
+        # 动作空间：功率分配矩阵 (M*N)，所有在 [0,1] 范围内
+        action_dim = M * N
         self._action_space = Box(low=0, high=1, shape=(action_dim,))
 
         self._steps_per_episode = STEPS_PER_EPISODE
@@ -41,23 +41,39 @@ class CellFreeEnv(gym.Env):
 
     @property
     def state(self):
-        # 状态包括：基站位置，无人机位置
-        bs_flat = self.bs_positions.flatten()
-        uav_flat = self.uav_positions.flatten()
-        return np.concatenate([bs_flat, uav_flat])
+        # 状态包括：邻接矩阵 (M, N, 2) - 距离和仰角
+        adj = np.zeros((M, N, 2))
+        for m in range(M):
+            bs_pos = self.bs_positions[m]
+            bs_pos_3d = np.concatenate([bs_pos, [0]])  # 基站 z=0
+            for k in range(N):
+                uav_pos = self.uav_positions[k]
+                # 水平距离
+                Rmk = np.linalg.norm(bs_pos - uav_pos[:2])
+                # 高度差
+                Hmk = uav_pos[2]  # 基站 z=0
+                # 3D 距离
+                Dmk = np.linalg.norm(bs_pos_3d - uav_pos)
+                # 仰角 (度)
+                theta_mk = np.degrees(np.arctan2(Hmk, Rmk + 1e-8))
+                adj[m, k, 0] = Dmk / max(X, Y, H)
+                adj[m, k, 1] = theta_mk / 180.0
+        return adj.flatten()
 
     def step(self, action):
         assert not self._terminated, "Episode has terminated"
 
-        # 解析动作：前 M*N 为连接，后 M*N 为功率分配
-        connection_actions = action[:M*N].reshape(M, N)
-        power_actions = action[M*N:].reshape(M, N)
+        # 解析动作：功率分配 (M*N)
+        power_actions = action.reshape(M, N)
 
-        # 更新连接矩阵：>0.8 表示连接
-        self.connection_matrix = (connection_actions > 0.8).astype(float)
-
-        # 更新功率矩阵：功率系数 = power_actions
+        # 更新功率矩阵
         self.power_matrix = power_actions
+
+        # 如果功率小于0.2，则设置为0
+        self.power_matrix[self.power_matrix < 0.2] = 0
+
+        # 更新连接矩阵：功率 > 0 则连通
+        self.connection_matrix = (self.power_matrix > 0).astype(float)
 
         # 归一化功率分配：每个基站的总功率分配之和为1
         for m in range(M):

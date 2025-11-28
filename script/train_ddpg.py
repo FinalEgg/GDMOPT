@@ -42,7 +42,7 @@ def get_args():
     parser.add_argument('--logdir', type=str, default='log')
     parser.add_argument('--log-prefix', type=str, default='default')
     parser.add_argument('--render', type=float, default=0.1)
-    parser.add_argument('--rew-norm', type=int, default=0)
+    parser.add_argument('--rew-norm', type=int, default=1)
     parser.add_argument(
         '--device', type=str, default='cuda:0')
     parser.add_argument('--resume-path', type=str, default=None)

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256, log_std_min=-20, log_std_max=2):
+    def __init__(self, state_dim, action_dim, hidden_dim=128, log_std_min=-20, log_std_max=2):
         super(Actor, self).__init__()
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
@@ -13,10 +13,20 @@ class Actor(nn.Module):
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
         )
         self.mean_linear = nn.Linear(hidden_dim, action_dim)
         self.log_std_linear = nn.Linear(hidden_dim, action_dim)
+        
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, state):
         x = self.net(state)
@@ -38,43 +48,66 @@ class Actor(nn.Module):
         return action, log_prob, mean, log_std
 
 
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
-        super(Critic, self).__init__()
-        self.q1_net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        self.q2_net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, state, action):
-        x = torch.cat([state, action], dim=-1)
-        return self.q1_net(x), self.q2_net(x)
-
-    def q1(self, state, action):
-        x = torch.cat([state, action], dim=-1)
-        return self.q1_net(x)
-
-
-class Value(nn.Module):
-    def __init__(self, state_dim, hidden_dim=256):
-        super(Value, self).__init__()
-        self.net = nn.Sequential(
+class DuelingCritic(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=128):
+        super(DuelingCritic, self).__init__()
+        # Q1 architecture
+        self.v1_net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self.a1_net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
 
-    def forward(self, state):
-        return self.net(state)
+        # Q2 architecture
+        self.v2_net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self.a2_net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, state, action):
+        sa = torch.cat([state, action], dim=-1)
+        
+        v1 = self.v1_net(state)
+        a1 = self.a1_net(sa)
+        q1 = v1 + a1
+        
+        v2 = self.v2_net(state)
+        a2 = self.a2_net(sa)
+        q2 = v2 + a2
+        
+        return q1, q2
