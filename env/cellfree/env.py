@@ -6,10 +6,11 @@ from .config import X, Y, H, M, N, P, pd, pu, TAU_P, ALPHA1, ALPHA2, XI1, XI2, C
 
 class CellFreeEnv(gym.Env):
 
-    def __init__(self, reward_mode="physical", k_nearest=3, action_mode="raw"):
+    def __init__(self, reward_mode="physical", k_nearest=3, action_mode="raw", top_p=0.6):
         self.reward_mode = reward_mode
         self.k_nearest = k_nearest
-        self.action_mode = action_mode # "raw" or "top_k"
+        self.action_mode = action_mode
+        self.top_p = top_p
         self._num_steps = 0
         self._terminated = False
 
@@ -121,22 +122,13 @@ class CellFreeEnv(gym.Env):
         # 更新功率矩阵
         self.power_matrix = power_actions
 
-        # --- 软阈值处理 (Soft Thresholding) ---
-        # 目的：模拟物理连接的稀疏性，同时保持梯度可导以供RL训练
-        # 新逻辑：Subtract & Rescale (ReLU-like)
-        # 如果 power < GATE_TH，则 effective_power = 0
-        # 如果 power >= GATE_TH，则 effective_power = (power - GATE_TH) / (1 - GATE_TH)
-        # 为了保持梯度，我们使用一个平滑的近似，或者直接使用 ReLU
-        # 这里使用 ReLU，因为 SAC 的探索噪声可以帮助跳过死区
+        # --- 移除底层物理约束 (Soft Thresholding) ---
+        # 按照用户要求，移除硬截断和软截断，让神经网络自己学习稀疏性
+        # 仅保留基本的非负约束
+        # self.power_matrix = np.maximum(0, self.power_matrix) # 动作空间已经是 [0,1]，理论上不需要，但为了保险
         
-        # 1. 减去阈值并截断
-        effective_power = np.maximum(0, self.power_matrix - GATE_TH)
-        
-        # 2. 重新缩放到 [0, 1]
-        if GATE_TH < 1.0:
-            effective_power = effective_power / (1.0 - GATE_TH)
-        
-        self.power_matrix = effective_power
+        # 保持 power_matrix 原样 (在 [0,1] 范围内)
+        pass
 
         # 更新连接矩阵：用于统计
         self.connection_matrix = (self.power_matrix > 0.001).astype(float)
@@ -187,36 +179,63 @@ class CellFreeEnv(gym.Env):
     def _calculate_geometric_reward(self):
         """
         基于几何拓扑的预训练奖励函数。
-        目标：引导智能体连接到信道增益最好的 K 个基站，并断开其他连接。
+        目标：引导智能体连接到信道增益最好的 Top-P 集合。
+        修改：仅基于邻接矩阵（连接状态）计算奖励，忽略功率大小。
+        只要功率大于阈值（视为连接），即获得满分奖励。
         """
-        reward = 0.0
+        # 1. 构建全局目标矩阵 (0/1)
+        target_matrix = np.zeros((M, N))
         
-        # 遍历每个用户
         for k in range(N):
-            # 获取该用户与所有基站的信道增益 (beta)
-            betas = self.beta_matrix[:, k] # (M,)
+            betas = self.beta_matrix[:, k]
+            sorted_indices = np.argsort(betas)[::-1]
+            sorted_betas = betas[sorted_indices]
+            cumsum_betas = np.cumsum(sorted_betas)
+            total_beta = cumsum_betas[-1]
             
-            # 找到最大的 K 个值的索引
-            k_eff = min(self.k_nearest, M)
-            top_k_indices = np.argsort(betas)[-k_eff:]
+            cutoff_index = np.searchsorted(cumsum_betas, self.top_p * total_beta)
             
-            # 构建目标功率向量：邻居为1，非邻居为0
-            target_power = np.zeros(M)
-            target_power[top_k_indices] = 1.0
+            # --- 增加最小贡献阈值机制 ---
+            # 即使没达到 top_p，如果剩下的基站贡献太小（例如小于最大基站的 1%），也放弃
+            # 这样可以避免为了凑够 95% 而连接一堆无用的远端基站
+            max_beta = sorted_betas[0]
+            threshold = 0.01 * max_beta # 阈值设为最强信号的 1%
             
-            # 获取当前分配的功率
-            current_power = self.power_matrix[:, k] # (M,)
+            # 找到第一个小于阈值的索引
+            # sorted_betas 是从大到小排序的
+            valid_indices = np.where(sorted_betas >= threshold)[0]
+            if len(valid_indices) > 0:
+                last_valid_index = valid_indices[-1]
+                # 取 cutoff_index 和 last_valid_index 的较小值
+                # 即：既要满足 top_p，又要满足最小贡献
+                # 但通常 top_p 会包含很多小值，所以我们应该取交集？
+                # 不，应该是取“更严格”的那个截断点。
+                # 如果 top_p 需要连到第 10 个，但第 5 个就已经很弱了，我们应该只连到第 5 个。
+                cutoff_index = min(cutoff_index, last_valid_index)
+            else:
+                # 极端情况：所有都小于阈值（不可能，因为 max_beta 就在里面）
+                cutoff_index = 0
             
-            # 计算 MSE 损失作为负奖励
-            # 我们希望 current_power 接近 target_power
-            mse = np.mean((current_power - target_power)**2)
+            top_p_indices = sorted_indices[:cutoff_index + 1]
             
-            # 奖励 = 1 - MSE (最大化)
-            # 这样奖励总是 <= 1，且当完全匹配时为 1
-            reward += (1.0 - mse)
+            target_matrix[top_p_indices, k] = 1.0
             
-        # 归一化并缩放
-        return (reward / N) * REWARD_SCALE
+        # 2. 获取当前连接矩阵 (0/1)
+        # self.connection_matrix 已经在 step 中更新: (self.power_matrix > 0.001).astype(float)
+        current_connection = self.connection_matrix
+        
+        # 3. 计算匹配度
+        # 差异矩阵：相同为0，不同为1
+        diff = np.abs(current_connection - target_matrix)
+        
+        # 错误率 (0 到 1)
+        error_rate = np.mean(diff)
+        
+        # 4. 奖励
+        # 错误率为0时，奖励为 REWARD_SCALE
+        reward = (1.0 - error_rate) * REWARD_SCALE
+        
+        return reward
 
     def _calculate_physical_reward(self):
         # 1. 使用预计算的 Gamma 矩阵 (M, N)
@@ -300,21 +319,21 @@ class CellFreeEnv(gym.Env):
         np.random.seed(seed)
 
 
-def make_cellfree_env(training_num=0, test_num=0, reward_mode="physical", k_nearest=3):
+def make_cellfree_env(training_num=0, test_num=0, reward_mode="physical", k_nearest=3, action_mode="raw", top_p=0.6):
     """Cell-free UAV 环境的包装函数。
     :return: 一个元组 (单个环境, 训练环境, 测试环境)。
     """
-    env = CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest)
+    env = CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p)
     env.seed(0)
 
     train_envs, test_envs = None, None
     if training_num:
         train_envs = DummyVectorEnv(
-            [lambda: CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest) for _ in range(training_num)])
+            [lambda: CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p) for _ in range(training_num)])
         train_envs.seed(0)
 
     if test_num:
         test_envs = DummyVectorEnv(
-            [lambda: CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest) for _ in range(test_num)])
+            [lambda: CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p) for _ in range(test_num)])
         test_envs.seed(0)
     return env, train_envs, test_envs

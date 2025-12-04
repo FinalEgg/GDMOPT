@@ -27,6 +27,7 @@ class SAC(BasePolicy):
             estimation_step: int = 1,
             lr_decay: bool = False,
             lr_maxt: int = 1000,
+            sparsity_coef: float = 0.01, # Sparsity regularization coefficient
             **kwargs: Any
     ) -> None:
         super().__init__(**kwargs)
@@ -38,13 +39,19 @@ class SAC(BasePolicy):
         self._gamma = gamma
         self._action_dim = action_dim
         self._n_step = estimation_step
+        self.sparsity_coef = sparsity_coef # Store sparsity coef
 
         # Auto-Alpha Logic
         self._is_auto_alpha = False
         if isinstance(alpha, tuple):
             self._is_auto_alpha = True
-            self._target_entropy, self._log_alpha_optim, self._alpha_lr = alpha
-            self._log_alpha = torch.zeros(1, requires_grad=True, device=device)
+            if len(alpha) == 4:
+                self._target_entropy, self._log_alpha_optim, self._alpha_lr, initial_alpha = alpha
+            else:
+                self._target_entropy, self._log_alpha_optim, self._alpha_lr = alpha
+                initial_alpha = 1.0
+            
+            self._log_alpha = torch.tensor([np.log(initial_alpha)], requires_grad=True, device=device, dtype=torch.float32)
             self._alpha = self._log_alpha.exp().item()
             # Re-create optimizer for log_alpha
             self._alpha_optim = torch.optim.Adam([self._log_alpha], lr=self._alpha_lr)
@@ -77,7 +84,8 @@ class SAC(BasePolicy):
                 **kwargs: Any) -> Batch:
         obs = batch.obs
         obs = to_torch(obs, device=self._device, dtype=torch.float32)
-        actions, log_probs, _, _ = self._actor.sample(obs)
+        # Unpack 5 values
+        actions, log_probs, _, _, _ = self._actor.sample(obs)
         return Batch(act=actions, log_prob=log_probs)
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:
@@ -92,7 +100,8 @@ class SAC(BasePolicy):
         with torch.no_grad():
             # Target Q calculation (SAC-Q style)
             # Use current actor for next state action sampling (Standard SAC)
-            next_act, next_log_prob, _, _ = self._actor.sample(obs_next)
+            # Unpack 5 values
+            next_act, next_log_prob, _, _, _ = self._actor.sample(obs_next)
             next_q1, next_q2 = self._target_critic(obs_next, next_act)
             # Minimum Q-value for stability
             # Use current alpha
@@ -113,7 +122,8 @@ class SAC(BasePolicy):
 
         # Update actor
         # Re-sample actions to get gradients
-        current_act, current_log_prob, _, _ = self._actor.sample(obs)
+        # Unpack 5 values: action, log_prob, mean, log_std, gate_probs
+        current_act, current_log_prob, _, _, gate_probs = self._actor.sample(obs)
         q1_pi, q2_pi = self._critic(obs, current_act)
         min_q_pi = torch.min(q1_pi, q2_pi)
         
@@ -121,7 +131,9 @@ class SAC(BasePolicy):
         alpha = self._log_alpha.exp() if self._is_auto_alpha else self._alpha
         
         # Maximize (min_q - alpha * log_prob) -> Minimize (alpha * log_prob - min_q)
-        actor_loss = (alpha * current_log_prob - min_q_pi).mean()
+        # Add Sparsity Loss: Minimize mean(gate_probs)
+        sparsity_loss = self.sparsity_coef * gate_probs.mean()
+        actor_loss = (alpha * current_log_prob - min_q_pi).mean() + sparsity_loss
 
         self._actor_optim.zero_grad()
         actor_loss.backward()

@@ -25,7 +25,7 @@ XI2 = 0.28 # LoS probability parameter
 CAPACITY_THRESHOLD = 0.1  # Threshold for UAV channel capacity (bits/symbol)
 REWARD_VALUE = 1.0        # Reward value when capacity exceeds threshold
 CONNECTION_COST = 0.05    # Penalty for each active connection (power > 0.01)
-REWARD_SCALE = 10.0       # Scale factor for the final reward
+REWARD_SCALE = 20.0       # Scale factor for the final reward
 
 # Soft Gate parameters
 GATE_K = 20.0             # Steepness of the sigmoid gate (Not used in new logic)

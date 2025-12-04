@@ -38,6 +38,9 @@ class Actor(nn.Module):
         self.mean_linear = nn.Linear(hidden_dim, action_dim)
         self.log_std_linear = nn.Linear(hidden_dim, action_dim)
         
+        # Gate Head (Topology Control)
+        self.gate_linear = nn.Linear(hidden_dim, action_dim)
+        
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -45,6 +48,11 @@ class Actor(nn.Module):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+        
+        # Initialize gate_linear bias to negative value to encourage sparsity at start
+        if hasattr(self, 'gate_linear') and m == self.gate_linear:
+             if m.bias is not None:
+                nn.init.constant_(m.bias, -3.0) # Sigmoid(-3) ~= 0.047 (Start with ~5% active links)
 
     def forward(self, state):
         batch_size = state.shape[0]
@@ -73,31 +81,57 @@ class Actor(nn.Module):
         mean = self.mean_linear(x)
         log_std = self.log_std_linear(x)
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        return mean, log_std
+        
+        # Gate Logits
+        gate_logits = self.gate_linear(x)
+        
+        return mean, log_std, gate_logits
 
     def sample(self, state):
-        mean, log_std = self.forward(state)
+        mean, log_std, gate_logits = self.forward(state)
         std = log_std.exp()
         normal = Normal(mean, std)
         x_t = normal.rsample()  # for reparameterization trick
         
+        # --- Continuous Action (Power) ---
         # Tanh Transform (Standard SAC)
-        # Action range: [-1, 1]
         y_t = torch.tanh(x_t)
-        
         # Scale to [0, 1]
-        action = (y_t + 1) / 2
+        power_action = (y_t + 1) / 2
         
-        # Log Prob Correction
-        # log_prob(y) = log_prob(x) - log(dy/dx)
-        # dy/dx = 1 - tanh^2(x)
-        # We also need to account for the scaling (x0.5)
-        # But wait, if we treat y_t as the action variable for the Tanh distribution,
-        # then we just transform y_t -> action.
-        # Let's stick to the standard TanhNormal implementation logic.
+        # --- Discrete Action (Gate) ---
+        # Gumbel-Sigmoid with Straight-Through Estimator
+        if self.training:
+            # Training: Use Gumbel noise for exploration
+            # gumbel = -log(-log(u))
+            u = torch.rand_like(gate_logits)
+            gumbel_noise = -torch.log(-torch.log(u + 1e-20) + 1e-20)
+            temp = 1.0 # Temperature
+            y_soft = torch.sigmoid((gate_logits + gumbel_noise) / temp)
+        else:
+            # Testing: Deterministic or just Sigmoid
+            y_soft = torch.sigmoid(gate_logits)
+            
+        # STE: Forward is Hard (0/1), Backward is Soft (Sigmoid gradient)
+        y_hard = (y_soft > 0.5).float()
+        mask = (y_hard - y_soft).detach() + y_soft
         
+        # --- Composite Action ---
+        action = power_action * mask
+        
+        # Log Prob Correction (Only for continuous part)
+        # We treat the gate as a separate independent decision for entropy purposes
+        # or just ignore it for the standard SAC entropy term (handled by sparsity loss)
         log_prob = normal.log_prob(x_t)
         # Correction for Tanh squashing
+        log_prob -= torch.log(1 - y_t.pow(2) + 1e-6)
+        # Correction for scaling / 2
+        log_prob -= torch.log(torch.tensor(2.0))
+        
+        log_prob = log_prob.sum(1, keepdim=True)
+        
+        # Return gate_probs (y_soft) for sparsity loss
+        return action, log_prob, mean, log_std, y_soft
         log_prob -= torch.log(1 - y_t.pow(2) + 1e-6)
         # Correction for scaling / 2
         log_prob -= torch.log(torch.tensor(2.0))

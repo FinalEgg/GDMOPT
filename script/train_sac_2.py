@@ -40,18 +40,18 @@ def get_args():
     parser.add_argument('--lr-decay', action='store_true', default=False)
     
     # Pre-training args
-    parser.add_argument('--pretrain-epoch', type=int, default=200)
+    parser.add_argument('--pretrain-epoch', type=int, default=400)
     parser.add_argument('--pretrain-step-per-epoch', type=int, default=100)
     parser.add_argument('--pretrain-step-per-collect', type=int, default=1000)
     
     # Fine-tuning args
-    parser.add_argument('--finetune-epoch', type=int, default=1300)
+    parser.add_argument('--finetune-epoch', type=int, default=1200)
     parser.add_argument('--finetune-step-per-epoch', type=int, default=100)
     parser.add_argument('--finetune-step-per-collect', type=int, default=1000)
 
     # SAC args
-    parser.add_argument('--actor-lr', type=float, default=3e-4)
-    parser.add_argument('--critic-lr', type=float, default=3e-4)
+    parser.add_argument('--actor-lr', type=float, default=3e-5)
+    parser.add_argument('--critic-lr', type=float, default=3e-5)
     parser.add_argument('--tau', type=float, default=0.005)
     parser.add_argument('--alpha', type=float, default=0.2) # Initial alpha
     parser.add_argument('--auto-alpha', action='store_true', default=True) # Enable Auto-Alpha
@@ -61,6 +61,10 @@ def get_args():
     parser.add_argument('--prioritized-replay', action='store_true', default=True)
     parser.add_argument('--prior-alpha', type=float, default=0.4)
     parser.add_argument('--prior-beta', type=float, default=0.4)
+    
+    # New args
+    parser.add_argument('--sparsity-coef', type=float, default=0.01)
+    parser.add_argument('--top-p', type=float, default=0.95)
 
     args = parser.parse_known_args()[0]
     return args
@@ -84,7 +88,7 @@ def setup_policy(args, env, actor_lr, critic_lr):
     # Configure Alpha
     if args.auto_alpha:
         target_entropy = -np.prod(env.action_space.shape)
-        alpha = (target_entropy, None, args.alpha_lr) # (target_entropy, optim, lr) - optim is created inside SAC
+        alpha = (target_entropy, None, args.alpha_lr, args.alpha) # (target_entropy, optim, lr, initial_alpha)
     else:
         alpha = args.alpha
 
@@ -104,6 +108,7 @@ def setup_policy(args, env, actor_lr, critic_lr):
         estimation_step=args.n_step,
         lr_decay=args.lr_decay,
         lr_maxt=args.finetune_epoch, # Use max epoch for decay
+        sparsity_coef=args.sparsity_coef # Pass sparsity coef
     )
     return policy
 
@@ -161,8 +166,9 @@ def main(args=get_args()):
     
     # --- Phase 1: Pre-training (Geometric Reward) ---
     print("Initializing Environment for Pre-training (Geometric)...")
+    # Use Top-P logic for pre-training target
     env_geo, train_envs_geo, test_envs_geo = make_cellfree_env(
-        args.training_num, args.test_num, reward_mode="geometric", k_nearest=3
+        args.training_num, args.test_num, reward_mode="geometric", top_p=args.top_p
     )
     
     # Initialize Policy
@@ -198,7 +204,7 @@ def main(args=get_args()):
     # --- Phase 2: Fine-tuning (Physical Reward) ---
     print("\nInitializing Environment for Fine-tuning (Physical)...")
     env_phy, train_envs_phy, test_envs_phy = make_cellfree_env(
-        args.training_num, args.test_num, reward_mode="physical"
+        args.training_num, args.test_num, reward_mode="physical", top_p=args.top_p
     )
     
     # Re-initialize Policy structure (to be safe and clean)
