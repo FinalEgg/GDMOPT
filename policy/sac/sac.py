@@ -22,7 +22,7 @@ class SAC(BasePolicy):
             device: torch.device,
             tau: float = 0.005,
             gamma: float = 0.99,
-            alpha: float = 0.2,
+            alpha: Union[float, tuple] = 0.2,
             reward_normalization: bool = False,
             estimation_step: int = 1,
             lr_decay: bool = False,
@@ -36,28 +36,42 @@ class SAC(BasePolicy):
         self._device = device
         self._tau = tau
         self._gamma = gamma
-        self._alpha = alpha
         self._action_dim = action_dim
         self._n_step = estimation_step
 
+        # Auto-Alpha Logic
+        self._is_auto_alpha = False
+        if isinstance(alpha, tuple):
+            self._is_auto_alpha = True
+            self._target_entropy, self._log_alpha_optim, self._alpha_lr = alpha
+            self._log_alpha = torch.zeros(1, requires_grad=True, device=device)
+            self._alpha = self._log_alpha.exp().item()
+            # Re-create optimizer for log_alpha
+            self._alpha_optim = torch.optim.Adam([self._log_alpha], lr=self._alpha_lr)
+        else:
+            self._alpha = alpha
+
         # Initialize actor
-        if actor is not None and actor_optim is not None:
+        if actor is not None:
             self._actor: torch.nn.Module = actor
-            self._target_actor = deepcopy(actor)
-            self._target_actor.eval()
-            self._actor_optim: torch.optim.Optimizer = actor_optim
+            # Standard SAC uses current actor for next state sampling, no target actor needed
+            if actor_optim is not None:
+                self._actor_optim: torch.optim.Optimizer = actor_optim
 
         # Initialize critic
-        if critic is not None and critic_optim is not None:
+        if critic is not None:
             self._critic: torch.nn.Module = critic
             self._target_critic = deepcopy(critic)
             self._target_critic.eval()
-            self._critic_optim: torch.optim.Optimizer = critic_optim
+            if critic_optim is not None:
+                self._critic_optim: torch.optim.Optimizer = critic_optim
 
         self._lr_decay = lr_decay
         if lr_decay:
             self._actor_lr_scheduler = CosineAnnealingLR(self._actor_optim, T_max=lr_maxt)
             self._critic_lr_scheduler = CosineAnnealingLR(self._critic_optim, T_max=lr_maxt)
+            if self._is_auto_alpha:
+                 self._alpha_lr_scheduler = CosineAnnealingLR(self._alpha_optim, T_max=lr_maxt)
 
     def forward(self, batch: Batch, state: Optional[Union[dict, Batch, np.ndarray]] = None,
                 **kwargs: Any) -> Batch:
@@ -77,10 +91,13 @@ class SAC(BasePolicy):
         # Update critic
         with torch.no_grad():
             # Target Q calculation (SAC-Q style)
-            next_act, next_log_prob, _, _ = self._target_actor.sample(obs_next)
+            # Use current actor for next state action sampling (Standard SAC)
+            next_act, next_log_prob, _, _ = self._actor.sample(obs_next)
             next_q1, next_q2 = self._target_critic(obs_next, next_act)
             # Minimum Q-value for stability
-            next_q = torch.min(next_q1, next_q2) - self._alpha * next_log_prob
+            # Use current alpha
+            alpha = self._log_alpha.exp() if self._is_auto_alpha else self._alpha
+            next_q = torch.min(next_q1, next_q2) - alpha * next_log_prob
             # Bellman target
             target_q = rew + (1 - done) * (self._gamma ** self._n_step) * next_q
 
@@ -100,48 +117,46 @@ class SAC(BasePolicy):
         q1_pi, q2_pi = self._critic(obs, current_act)
         min_q_pi = torch.min(q1_pi, q2_pi)
         
+        # Use current alpha
+        alpha = self._log_alpha.exp() if self._is_auto_alpha else self._alpha
+        
         # Maximize (min_q - alpha * log_prob) -> Minimize (alpha * log_prob - min_q)
-        actor_loss = (self._alpha * current_log_prob - min_q_pi).mean()
+        actor_loss = (alpha * current_log_prob - min_q_pi).mean()
 
         self._actor_optim.zero_grad()
         actor_loss.backward()
         self._actor_optim.step()
+        
+        # Update Alpha (Auto-Tuning)
+        alpha_loss_item = 0.0
+        if self._is_auto_alpha:
+            # Loss = - (log_alpha * (log_prob + target_entropy)).mean()
+            # We want alpha * log_prob = alpha * (-target_entropy)
+            # So log_prob should be close to -target_entropy
+            alpha_loss = -(self._log_alpha * (current_log_prob + self._target_entropy).detach()).mean()
+            
+            self._alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self._alpha_optim.step()
+            alpha_loss_item = alpha_loss.item()
+            
+            # Update self._alpha for logging/next step usage (though we use .exp() directly)
+            self._alpha = self._log_alpha.exp().item()
 
         # Soft update targets
         self._soft_update(self._critic, self._target_critic, self._tau)
-        # Note: No target actor update needed usually, but some implementations do it. 
-        # Tianshou's SAC implementation usually updates target actor too if it exists, 
-        # but standard SAC only needs target critic. 
-        # However, since we initialized _target_actor, let's keep it consistent or remove it if unused.
-        # In standard SAC (Haarnoja 2018), only Critic has a target network.
-        # But let's stick to updating what we have.
-        # Actually, standard SAC DOES NOT use target actor. 
-        # But let's check if we use _target_actor. Yes, in learn() we use self._target_actor.sample(obs_next).
-        # Wait, standard SAC uses current policy for next action sampling?
-        # "We use the target soft Q-function ... and sample actions from the current policy" -> No, usually it's current policy.
-        # Let's check the paper or standard impls. 
-        # SpinningUp: "a' ~ pi_theta( . | s' )" (Current Policy).
-        # So we should use self._actor for next_act sampling, not self._target_actor.
-        # BUT, using a target actor is a valid variation (like DDPG). 
-        # Given I want to be safe, I will switch to using self._actor for next_act sampling 
-        # to be consistent with standard SAC, and remove _target_actor update if possible.
-        # However, to minimize changes and potential bugs, I will keep using _target_actor if it was there, 
-        # OR switch to _actor if that's the "Modern" way I promised.
-        # Modern SAC (SAC-Q) typically uses current actor for next state action.
-        # Let's switch to self._actor for next state sampling.
-        
-        # RE-EVALUATION:
-        # In the code I wrote above: `next_act, ... = self._target_actor.sample(obs_next)`
-        # If I change this to `self._actor.sample(obs_next)`, I don't need `_target_actor`.
-        # Let's do that for a cleaner "Modern SAC".
         
         if self._lr_decay:
             self._actor_lr_scheduler.step()
             self._critic_lr_scheduler.step()
+            if self._is_auto_alpha:
+                self._alpha_lr_scheduler.step()
 
         return {
             "loss/actor": actor_loss.item(),
             "loss/critic": critic_loss.item(),
+            "loss/alpha": alpha_loss_item,
+            "alpha": self._alpha
         }
 
     def _soft_update(self, net: nn.Module, target_net: nn.Module, tau: float) -> None:

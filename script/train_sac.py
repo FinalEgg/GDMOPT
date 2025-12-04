@@ -41,7 +41,7 @@ def get_args():
     parser.add_argument('--logdir', type=str, default='log')
     parser.add_argument('--log-prefix', type=str, default='default')
     parser.add_argument('--render', type=float, default=0.1)
-    parser.add_argument('--rew-norm', type=int, default=1)
+    parser.add_argument('--rew-norm', type=int, default=0) # Disabled reward normalization
     parser.add_argument(
         '--device', type=str, default='cuda:0')
     parser.add_argument('--resume-path', type=str, default=None)
@@ -50,14 +50,14 @@ def get_args():
     parser.add_argument('--note', type=str, default='')
 
     # for sac
-    parser.add_argument('--actor-lr', type=float, default=1e-5)
-    parser.add_argument('--critic-lr', type=float, default=1e-5)
+    parser.add_argument('--actor-lr', type=float, default=3e-4)
+    parser.add_argument('--critic-lr', type=float, default=3e-4)
     parser.add_argument('--value-lr', type=float, default=1e-4)
     parser.add_argument('--tau', type=float, default=0.005)  # for soft update
-    parser.add_argument('--alpha', type=float, default=0.2)  # temperature parameter
+    parser.add_argument('--alpha', type=float, default=0.05)  # temperature parameter (Lowered for stability)
 
     # for prioritized experience replay
-    parser.add_argument('--prioritized-replay', action='store_true', default=False)
+    parser.add_argument('--prioritized-replay', action='store_true', default=True)
     parser.add_argument('--prior-alpha', type=float, default=0.4)
     parser.add_argument('--prior-beta', type=float, default=0.4)
     parser.add_argument('--env', type=str, default='cellfree', choices=['pendulum', 'optimization', 'cellfree'])

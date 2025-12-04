@@ -25,11 +25,34 @@ def get_args():
                         help='Run name (e.g., Nov13-145717)')
     parser.add_argument('--env', type=str, default='cellfree',
                         help='Environment name')
+    parser.add_argument('--save-weights', action='store_true',
+                        help='Save model weights to txt file')
     return parser.parse_args()
 
 def load_model(algorithm, run_name, env_name, state_dim, action_dim):
     """根据算法类型加载模型"""
-    log_path = f'log/default/{algorithm}/{env_name}/{run_name}/policy.pth'
+    # 支持新的日志路径结构 (combined/sac/cellfree/...)
+    # 尝试多种可能的路径
+    possible_paths = [
+        f'log/combined/{algorithm}/{env_name}/{run_name}/finetune_policy.pth', # 新结构 (微调后)
+        f'log/combined/{algorithm}/{env_name}/{run_name}/pretrain_policy.pth', # 新结构 (预训练)
+        f'log/default/{algorithm}/{env_name}/{run_name}/policy.pth',           # 旧结构
+        f'log/{run_name}/policy.pth'                                            # 简单结构
+    ]
+    
+    log_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            log_path = path
+            break
+            
+    if log_path is None:
+        print(f"Error: Could not find model weights in any of these locations:")
+        for p in possible_paths:
+            print(f" - {p}")
+        # Fallback to default for error message consistency
+        log_path = possible_paths[0]
+
     debug_file = os.path.join(os.path.dirname(log_path), 'debug_output.txt')
 
     if algorithm == 'combined':
@@ -72,8 +95,9 @@ def load_model(algorithm, run_name, env_name, state_dim, action_dim):
         )
     elif algorithm == 'sac':
         from policy.sac.sac import SAC
-        from model.sac.sac import SACModel
-        model = SACModel(state_dim, action_dim)
+        from model.sac.sac import Actor
+        # 注意：Actor 的 hidden_dim 必须与训练时一致 (256)
+        model = Actor(state_dim, action_dim, hidden_dim=256)
         policy = SAC(
             state_dim=state_dim,
             actor=model,
@@ -81,8 +105,6 @@ def load_model(algorithm, run_name, env_name, state_dim, action_dim):
             action_dim=action_dim,
             critic=None,
             critic_optim=None,
-            value=None,
-            value_optim=None,
             device='cpu'
         )
     elif algorithm == 'diffusion_opt':
@@ -142,11 +164,32 @@ def infer_actions(policy, algorithm, state):
             # 对于其他算法，动作是功率矩阵
             batch = Batch(obs=state_tensor)
             result = policy.forward(batch)
-            actions = result.act.squeeze(0).numpy()
+            # SAC 输出可能是 (action, log_prob) 元组，或者 Batch 对象
+            # Tianshou 的 forward 返回 Batch，其中 act 是动作
+            if hasattr(result, 'act'):
+                actions = result.act
+            else:
+                actions = result[0] # 假设是元组 (action, state)
+                
+            if isinstance(actions, torch.Tensor):
+                actions = actions.squeeze(0).numpy()
+            
             # 动作是功率矩阵 (M*N)
             power_actions = actions.reshape(M, N)
-            # 连接基于功率阈值 0.2
-            connection_actions = (power_actions > 0.2).astype(float)
+            
+            # 应用软门控逻辑来决定连接状态 (与 env.py 保持一致)
+            from env.cellfree.config import GATE_TH
+            
+            # 新逻辑：Subtract & Rescale (ReLU-like)
+            effective_power = np.maximum(0, power_actions - GATE_TH)
+            if GATE_TH < 1.0:
+                effective_power = effective_power / (1.0 - GATE_TH)
+            
+            # 更新 power_actions 为有效功率，以便可视化真实效果
+            power_actions = effective_power
+            
+            connection_actions = (effective_power > 0.001).astype(float)
+            
     return connection_actions, power_actions
 
 def generate_random_state():
@@ -164,7 +207,53 @@ def calculate_reward_from_actions(env, connection_actions, power_actions):
         total_power = np.sum(env.power_matrix[m, :])
         if total_power > 0:
             env.power_matrix[m, :] /= total_power
-    return env._calculate_reward()
+            
+    # 兼容新的环境接口 (reward_mode)
+    # 默认使用物理奖励进行评估
+    if hasattr(env, '_calculate_physical_reward'):
+        return env._calculate_physical_reward()
+    elif hasattr(env, '_calculate_reward'):
+        return env._calculate_reward()
+    else:
+        raise AttributeError("Environment has no reward calculation method")
+
+def save_weights(policy, algorithm, run_name, env_name):
+    """保存模型权重到txt文件"""
+    log_dir = f'log/default/{algorithm}/{env_name}/{run_name}'
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        
+    output_path = os.path.join(log_dir, 'model_weights.txt')
+    
+    with open(output_path, 'w') as f:
+        f.write(f"Model Weights for {algorithm} (Run: {run_name})\n")
+        f.write("="*80 + "\n\n")
+        
+        # 获取核心网络
+        if algorithm == 'sac':
+            # SAC主要关注Actor网络
+            # 注意：policy._actor 是在 SAC.__init__ 中定义的
+            model = policy._actor
+        elif algorithm == 'ddpg':
+            model = policy._actor
+        elif algorithm == 'combined':
+            model = policy.actor
+        elif algorithm == 'diffusion_opt':
+            model = policy.actor
+        else:
+            model = policy
+            
+        # 遍历参数
+        for name, param in model.named_parameters():
+            f.write(f"Parameter: {name}\n")
+            f.write(f"Shape: {list(param.shape)}\n")
+            f.write("Values:\n")
+            # 设置打印选项以显示更多内容
+            np.set_printoptions(threshold=np.inf, linewidth=200)
+            f.write(str(param.data.cpu().numpy()))
+            f.write("\n" + "-"*80 + "\n")
+            
+    print(f"Model weights saved to {output_path}")
 
 def visualize(bs_positions, uav_positions, connection_actions, power_actions):
     """可视化"""
@@ -217,13 +306,19 @@ def main():
     action_dim = env.action_space.shape[0]
 
     # 生成随机状态
-    state, bs_positions, uav_positions = generate_random_state()
+    state, _ = env.reset()
+    bs_positions = env.bs_positions
+    uav_positions = env.uav_positions
+    
     print(f"Generated state shape: {state.shape}")
     print(f"BS positions: {bs_positions}")
     print(f"UAV positions: {uav_positions}")
 
     # 加载模型
     policy = load_model(args.algorithm, args.run_name, args.env, state_dim, action_dim)
+
+    if args.save_weights:
+        save_weights(policy, args.algorithm, args.run_name, args.env)
 
     # 推测动作
     connection_actions, power_actions = infer_actions(policy, args.algorithm, state)
