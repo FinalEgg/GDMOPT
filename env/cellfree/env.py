@@ -17,8 +17,8 @@ class CellFreeEnv(gym.Env):
         # 初始化基站位置（均匀分布）
         self.bs_positions = np.random.uniform(0, [X, Y], (M, 2))  # 每个基站的 [x, y]
 
-        # 初始化无人机位置（在3D空间中均匀分布，更靠近地面以减少距离）
-        self.uav_positions = np.random.uniform(0, [X, Y, H/2], (N, 3))  # 每个无人机的 [x, y, z]，z限制在0-H/2
+        # 初始化无人机位置
+        self.uav_positions = np.random.uniform(0, [X, Y, H], (N, 3))  # 每个无人机的 [x, y, z]
 
         # 观测空间：
         # 每个 UAV 的特征 = [与所有 BS 的 LogBeta/角度 (M*2)] + [自身位置 (x,y,z) (3)]
@@ -121,13 +121,6 @@ class CellFreeEnv(gym.Env):
 
         # 更新功率矩阵
         self.power_matrix = power_actions
-
-        # --- 移除底层物理约束 (Soft Thresholding) ---
-        # 按照用户要求，移除硬截断和软截断，让神经网络自己学习稀疏性
-        # 仅保留基本的非负约束
-        # self.power_matrix = np.maximum(0, self.power_matrix) # 动作空间已经是 [0,1]，理论上不需要，但为了保险
-        
-        # 保持 power_matrix 原样 (在 [0,1] 范围内)
         pass
 
         # 更新连接矩阵：用于统计
@@ -178,135 +171,206 @@ class CellFreeEnv(gym.Env):
 
     def _calculate_geometric_reward(self):
         """
-        基于几何拓扑的预训练奖励函数。
+        基于几何拓扑的预训练奖励函数 (Redesigned)。
         目标：引导智能体连接到信道增益最好的 Top-P 集合。
-        修改：仅基于邻接矩阵（连接状态）计算奖励，忽略功率大小。
-        只要功率大于阈值（视为连接），即获得满分奖励。
+        
+        优化：
+        - 向量化计算，移除 Python 循环，提高计算效率。
+        - 规范化注释，清晰解释每一步的物理含义。
+        
+        奖励组成：
+        1. 基础奖励 (TP)：正确连接给予 GEO_REWARD_HIT。
+        2. 完美匹配 (Perfect)：完全匹配 Top-P 结果给予 GEO_BONUS_PERFECT。
+        3. 漏连惩罚 (FN)：应连未连给予 GEO_PENALTY_MISS。
+        4. 误连惩罚 (FP)：
+           - 无用连接 (Beta < Threshold)：给予 GEO_PENALTY_USELESS。
+           - 次优连接 (Beta >= Threshold 但不在 Top-P)：给予 GEO_PENALTY_WRONG。
+        5. 无连接惩罚 (No Connect)：UAV 未连接任何基站给予 GEO_PENALTY_NO_CONNECT。
         """
-        # 1. 构建全局目标矩阵 (0/1)
+        from .config import GEO_BETA_THRESHOLD, GEO_REWARD_HIT, GEO_PENALTY_MISS, GEO_PENALTY_USELESS, GEO_BONUS_PERFECT, GEO_PENALTY_WRONG, GEO_PENALTY_NO_CONNECT
+        
+        # --- 1. 构建全局目标矩阵 (Target Matrix) ---
+        # 目标：找出每个 UAV 的 Top-P 基站集合，且 Beta >= GEO_BETA_THRESHOLD
+        
+        # 对 Beta 矩阵进行排序 (M, N)，axis=0 (基站维度)
+        # sort_indices: 排序后的索引，从大到小
+        # sorted_betas: 排序后的 Beta 值
+        sorted_indices = np.argsort(self.beta_matrix, axis=0)[::-1]
+        sorted_betas = np.take_along_axis(self.beta_matrix, sorted_indices, axis=0)
+        
+        # 计算累积和 (CumSum)
+        cumsum_betas = np.cumsum(sorted_betas, axis=0)
+        total_beta = cumsum_betas[-1, :] # (N,) 每个 UAV 的总 Beta
+        
+        # 计算 Top-P 阈值
+        # threshold_values: (N,)
+        threshold_values = total_beta * self.top_p
+        
+        # 找到满足 Top-P 的截断位置
+        # mask_cumsum: (M, N) 哪些位置的累积和已经超过阈值
+        # argmax 会返回第一个 True 的索引，即截断位置
+        mask_cumsum = cumsum_betas >= threshold_values[None, :]
+        cutoff_indices = np.argmax(mask_cumsum, axis=0) # (N,)
+        
+        # --- 绝对阈值过滤 ---
+        # 只有 Beta >= GEO_BETA_THRESHOLD 的基站才有效
+        # 统计每个 UAV 有多少个有效基站
+        valid_counts = np.sum(sorted_betas >= GEO_BETA_THRESHOLD, axis=0) # (N,)
+        
+        # 最终截断索引：取 Top-P 截断和有效基站数量的较小值
+        # 注意：索引是 0-based，所以如果 valid_counts=3，最大索引是 2
+        # 修改：强制至少选择一个基站 (即使 valid_counts=0)
+        # 逻辑：final_cutoffs 至少为 0 (即选择 sorted_indices[0])
+        
+        # 1. 计算基于规则的截断点 (可能为 -1)
+        rule_based_cutoffs = np.minimum(cutoff_indices, valid_counts - 1)
+        
+        # 2. 强制保底：至少选择 Top 1
+        final_cutoffs = np.maximum(rule_based_cutoffs, 0)
+        
+        # 构建目标矩阵 (Target Matrix)
         target_matrix = np.zeros((M, N))
         
-        for k in range(N):
-            betas = self.beta_matrix[:, k]
-            sorted_indices = np.argsort(betas)[::-1]
-            sorted_betas = betas[sorted_indices]
-            cumsum_betas = np.cumsum(sorted_betas)
-            total_beta = cumsum_betas[-1]
+        # 生成网格索引以进行向量化赋值
+        # 我们需要将 sorted_indices 中前 final_cutoffs + 1 个位置设为 1
+        
+        # row_indices: (M, 1) -> (0, 1, 2, ..., M-1)
+        row_indices = np.arange(M)[:, None]
+        
+        # selection_mask: (M, N)
+        # 只要行索引 <= 最终截断索引即可 (final_cutoffs 保证 >= 0)
+        selection_mask = (row_indices <= final_cutoffs[None, :])
+        
+        # 获取目标基站的原始索引
+        target_bs_indices = sorted_indices[selection_mask]
+        
+        # 获取对应的 UAV 索引
+        # col_indices: (M, N) -> (0, 0...; 1, 1...; ...)
+        col_indices = np.tile(np.arange(N), (M, 1))
+        target_uav_indices = col_indices[selection_mask]
+        
+        # 赋值
+        target_matrix[target_bs_indices, target_uav_indices] = 1.0
             
-            cutoff_index = np.searchsorted(cumsum_betas, self.top_p * total_beta)
-            
-            # --- 增加最小贡献阈值机制 ---
-            # 即使没达到 top_p，如果剩下的基站贡献太小（例如小于最大基站的 1%），也放弃
-            # 这样可以避免为了凑够 95% 而连接一堆无用的远端基站
-            max_beta = sorted_betas[0]
-            threshold = 0.01 * max_beta # 阈值设为最强信号的 1%
-            
-            # 找到第一个小于阈值的索引
-            # sorted_betas 是从大到小排序的
-            valid_indices = np.where(sorted_betas >= threshold)[0]
-            if len(valid_indices) > 0:
-                last_valid_index = valid_indices[-1]
-                # 取 cutoff_index 和 last_valid_index 的较小值
-                # 即：既要满足 top_p，又要满足最小贡献
-                # 但通常 top_p 会包含很多小值，所以我们应该取交集？
-                # 不，应该是取“更严格”的那个截断点。
-                # 如果 top_p 需要连到第 10 个，但第 5 个就已经很弱了，我们应该只连到第 5 个。
-                cutoff_index = min(cutoff_index, last_valid_index)
-            else:
-                # 极端情况：所有都小于阈值（不可能，因为 max_beta 就在里面）
-                cutoff_index = 0
-            
-            top_p_indices = sorted_indices[:cutoff_index + 1]
-            
-            target_matrix[top_p_indices, k] = 1.0
-            
-        # 2. 获取当前连接矩阵 (0/1)
-        # self.connection_matrix 已经在 step 中更新: (self.power_matrix > 0.001).astype(float)
+        # --- 2. 计算奖励 (Vectorized) ---
         current_connection = self.connection_matrix
         
-        # 3. 计算匹配度
-        # 差异矩阵：相同为0，不同为1
-        diff = np.abs(current_connection - target_matrix)
+        reward = 0.0
         
-        # 错误率 (0 到 1)
-        error_rate = np.mean(diff)
+        # True Positive (正确连接): Target=1 & Current=1
+        tp_count = np.sum((target_matrix == 1) & (current_connection == 1))
+        reward += tp_count * GEO_REWARD_HIT
         
-        # 4. 奖励
-        # 错误率为0时，奖励为 REWARD_SCALE
-        reward = (1.0 - error_rate) * REWARD_SCALE
+        # False Negative (漏连): Target=1 & Current=0
+        fn_count = np.sum((target_matrix == 1) & (current_connection == 0))
+        reward -= fn_count * GEO_PENALTY_MISS
         
+        # False Positive (误连): Target=0 & Current=1
+        fp_mask = (target_matrix == 0) & (current_connection == 1)
+        
+        # 细分误连：
+        # 1. 无用连接 (Useless): Beta < Threshold
+        useless_mask = (self.beta_matrix < GEO_BETA_THRESHOLD)
+        fp_useless_count = np.sum(fp_mask & useless_mask)
+        
+        # 2. 次优连接 (Wrong): Beta >= Threshold (但不在 Top-P)
+        fp_wrong_count = np.sum(fp_mask & (~useless_mask))
+        
+        reward -= fp_useless_count * GEO_PENALTY_USELESS
+        reward -= fp_wrong_count * GEO_PENALTY_WRONG
+        
+        # --- 3. 全局约束惩罚 ---
+        
+        # 无连接惩罚 (No Connect): UAV 未连接任何基站
+        uav_connections = np.sum(current_connection, axis=0) # (N,)
+        no_connect_uavs = np.sum(uav_connections == 0)
+        reward -= no_connect_uavs * GEO_PENALTY_NO_CONNECT
+        
+        # 完美匹配奖励 (Perfect Bonus)
+        # 只有当所有连接都完全匹配时才给予
+        if np.array_equal(target_matrix, current_connection):
+            reward += GEO_BONUS_PERFECT
+            
         return reward
 
-    def _calculate_physical_reward(self):
-        # 1. 使用预计算的 Gamma 矩阵 (M, N)
-        # self.gamma_matrix 已经在 _calculate_large_scale_fading 中计算并缓存
+    def _calculate_capacity(self):
+        """
+        计算每个 UAV 的下行链路容量。
         
-        # 2. 计算信号功率 (Signal Power)
-        # Signal_k = sum_m (sqrt(eta_mk) * gamma_mk)
-        # 只有连接的基站才贡献信号，但这里我们假设所有分配了功率的基站都贡献信号
-        # connection_matrix 实际上是由 power_matrix > 0.01 决定的，
-        # 但物理上只要 power > 0 就有信号。我们直接用 power_matrix 计算。
+        Returns:
+            Capacity (np.ndarray): 每个 UAV 的容量 (N,)
+            total_capacity (float): 总容量
+        """
+        # 1. 准备数据
+        # self.gamma_matrix: (M, N) 预计算的大尺度衰落因子
+        # self.power_matrix: (M, N) 当前功率分配动作 (eta_mk)
         
-        # 预计算加权功率项，避免重复计算
-        weighted_power = self.power_matrix * self.gamma_matrix
-        
-        # sqrt(eta) * gamma = sqrt(eta) * gamma
-        # 注意：这里公式可能是 sqrt(eta) * gamma，也可能是 eta * gamma
-        # 根据之前的代码：signal_components = np.sqrt(self.power_matrix) * gamma_matrix
-        # 这是一个相干叠加的假设 (Coherent Joint Transmission)
+        # 2. 计算信号分量 (Signal Component)
+        # 假设相干传输，信号幅度假加
+        # signal_components: (M, N)
         signal_components = np.sqrt(self.power_matrix) * self.gamma_matrix
         
-        # 对每个用户 k 求和 (axis=0 是基站维)
-        signals = np.sum(signal_components, axis=0) # (N,)
+        # 对每个 UAV 求和得到总接收信号幅度
+        # signals: (N,)
+        signals = np.sum(signal_components, axis=0)
+        
+        # 接收信号功率 (Numerator)
+        # numerator: (N,)
         numerator = pd * (signals ** 2)
         
         # 3. 计算干扰功率 (Interference Power)
-        # I_k = sum_m [ beta_mk * ( (sum_j eta_mj * gamma_mj) - eta_mk * gamma_mk ) ]
-        # 令 T_m = sum_j (eta_mj * gamma_mj) 为基站 m 发送的总加权功率
+        # 计算每个基站的总加权发射功率
+        # weighted_power: (M, N) = eta_mk * gamma_mk
+        weighted_power = self.power_matrix * self.gamma_matrix
         
-        # T_m: 每个基站的总发射效应 (M,)
-        # 使用预计算的 weighted_power
+        # T: (M,) 每个基站的总有效发射功率
         T = np.sum(weighted_power, axis=1)
         
-        # 构造干扰矩阵 (M, N)
-        # 对于每个 (m, k)，干扰源是 T_m - eta_mk * gamma_mk
-        # 利用广播: T[:, None] 是 (M, 1)，减去 (M, N)
-        interference_source = T[:, None] - weighted_power
+        # 计算每个 UAV 接收到的干扰
+        # 干扰源 = 基站总功率 - 发给该 UAV 的有用功率
+        # interference_source: (M, N)
+        interference_source = T[:, np.newaxis] - weighted_power
         
-        # 乘以路径损耗 beta_mk
+        # 考虑路径损耗 beta_mk
+        # interference_matrix: (M, N)
         interference_matrix = self.beta_matrix * interference_source
         
-        # 对每个用户 k 求和得到总干扰
-        interferences = np.sum(interference_matrix, axis=0) # (N,)
+        # 对每个 UAV 求和得到总干扰
+        # interferences: (N,)
+        interferences = np.sum(interference_matrix, axis=0)
         
+        # 总干扰 + 噪声
         denominator = pd * interferences + NOISE_POWER
         
         # 4. 计算 SINR 和 Capacity
         SINR = numerator / denominator
         Capacity = np.log2(1 + SINR)
         
-        # 截断和求和
+        # 截断容量以防止极端值 (Clip)
         Capacity = np.clip(Capacity, 0, 10)
         total_capacity = np.sum(Capacity)
         
-        # --- 稀疏性惩罚 (Sparsity Penalty) ---
-        # 惩罚非零连接，鼓励智能体断开无用连接
-        # 使用平滑的 L1 正则化或直接惩罚连接数
-        # 这里我们惩罚 "有效连接数" (power > 0.01)
-        # 为了保持梯度，我们使用 power 的加权和作为惩罚项的一部分
+        return Capacity, total_capacity
+
+    def _calculate_physical_reward(self):
+        """
+        计算物理层的下行链路容量奖励 (Downlink Capacity Reward)。
         
-        # 1. 硬连接惩罚 (用于最终评估，但梯度不连续)
-        # num_connections = np.sum(self.power_matrix > 0.01)
+        Returns:
+            reward (float): 归一化后的总容量减去功率成本。
+        """
+        # 1. 计算容量
+        _, total_capacity = self._calculate_capacity()
         
-        # 2. 软连接惩罚 (Soft L1 Penalty)
-        # 惩罚所有功率的总和，或者使用 log barrier
-        # 这里简单地惩罚总功率消耗，系数设为 CONNECTION_COST
-        # 这样智能体在收益(Capacity)小于成本(Cost)时会倾向于关闭连接
+        # 2. 计算惩罚项 (Penalty)
+        # 功率消耗惩罚：鼓励在不显著降低容量的情况下减少功率使用
         power_penalty = CONNECTION_COST * np.sum(self.power_matrix)
         
-        # 缩放奖励以稳定训练 (可选，根据之前经验)
-        # 最终奖励 = (容量收益 - 功率成本) * 缩放因子
-        return (total_capacity / 10.0 - power_penalty) * REWARD_SCALE
+        # 3. 最终奖励
+        # 缩放奖励以便于训练
+        reward = (total_capacity - power_penalty) * REWARD_SCALE
+        
+        return reward
 
     def _update_uav_positions(self):
         # 无人机的简单随机移动

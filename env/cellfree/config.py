@@ -3,7 +3,7 @@
 # Environment dimensions
 X = 100  # Length of the area (meters)
 Y = 100  # Width of the area (meters)
-H = 50   # Height of the area (meters)
+H = 100   # Height of the area (meters)
 
 # Network components
 M = 5    # Number of ground base stations
@@ -26,6 +26,15 @@ CAPACITY_THRESHOLD = 0.1  # Threshold for UAV channel capacity (bits/symbol)
 REWARD_VALUE = 1.0        # Reward value when capacity exceeds threshold
 CONNECTION_COST = 0.05    # Penalty for each active connection (power > 0.01)
 REWARD_SCALE = 20.0       # Scale factor for the final reward
+
+# Geometric Reward Parameters
+GEO_BETA_THRESHOLD = 2e-5 # Absolute threshold for useful beta
+GEO_REWARD_HIT = 4.0      # Reward for correctly connecting to a target
+GEO_PENALTY_MISS = 0.3    # Penalty for missing a target (False Negative)
+GEO_PENALTY_WRONG = 0.2   # Penalty for connecting to suboptimal BS (Not Target but Beta > Threshold)
+GEO_PENALTY_USELESS = 0.7 # Penalty for connecting to useless BS (Beta < Threshold)
+GEO_PENALTY_NO_CONNECT = 20.0 # Penalty if a UAV has NO connections at all
+GEO_BONUS_PERFECT = 20.0  # Bonus for perfect match with target matrix
 
 # Soft Gate parameters
 GATE_K = 20.0             # Steepness of the sigmoid gate (Not used in new logic)

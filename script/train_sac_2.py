@@ -50,12 +50,12 @@ def get_args():
     parser.add_argument('--finetune-step-per-collect', type=int, default=1000)
 
     # SAC args
-    parser.add_argument('--actor-lr', type=float, default=3e-5)
-    parser.add_argument('--critic-lr', type=float, default=3e-5)
+    parser.add_argument('--actor-lr', type=float, default=1e-4) # Increased LR
+    parser.add_argument('--critic-lr', type=float, default=3e-4) # Increased LR
     parser.add_argument('--tau', type=float, default=0.005)
-    parser.add_argument('--alpha', type=float, default=0.2) # Initial alpha
+    parser.add_argument('--alpha', type=float, default=0.2) # Lower initial alpha to reduce noise dominance
     parser.add_argument('--auto-alpha', action='store_true', default=True) # Enable Auto-Alpha
-    parser.add_argument('--alpha-lr', type=float, default=1e-5) # Alpha learning rate
+    parser.add_argument('--alpha-lr', type=float, default=3e-4) # Increased Alpha LR
 
     # PER args
     parser.add_argument('--prioritized-replay', action='store_true', default=True)
@@ -64,7 +64,7 @@ def get_args():
     
     # New args
     parser.add_argument('--sparsity-coef', type=float, default=0.01)
-    parser.add_argument('--top-p', type=float, default=0.95)
+    parser.add_argument('--top-p', type=float, default=0.6)
 
     args = parser.parse_known_args()[0]
     return args
@@ -171,14 +171,25 @@ def main(args=get_args()):
         args.training_num, args.test_num, reward_mode="geometric", top_p=args.top_p
     )
     
+    # Calculate Baseline Reward (All Zeros)
+    print("Calculating Baseline Reward for All-Zero Action...")
+    dummy_env = env_geo
+    dummy_env.reset()
+    _, zero_reward, _, _, _ = dummy_env.step(np.zeros(dummy_env.action_space.shape))
+    print(f"Baseline Reward (All Zeros): {zero_reward:.4f}")
+    
     # Initialize Policy
     policy = setup_policy(args, env_geo, args.actor_lr, args.critic_lr)
     
     # Define stop function for pre-training
-    # Geometric reward max is REWARD_SCALE (10.0). If we reach 9.5, it's converged.
-    from env.cellfree.config import REWARD_SCALE
+    # Geometric reward max is dynamic now.
+    # Max possible reward = (N * M_connected * GEO_REWARD_HIT) + GEO_BONUS_PERFECT
+    # Assuming avg 5 connections per UAV, N=5 -> 25 connections.
+    # Max ~ 25 * 2.0 + 10 = 60.0.
+    # Let's set a reasonable threshold, e.g., 30.0
+    print(f"Pre-training Stop Threshold: 30.0")
     def stop_fn_geo(mean_rewards):
-        return mean_rewards >= REWARD_SCALE * 0.95
+        return mean_rewards >= 30.0
     
     # Run Pre-training
     run_training_phase(
