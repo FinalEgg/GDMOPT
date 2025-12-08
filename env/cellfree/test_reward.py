@@ -418,6 +418,186 @@ def test_reward_distribution():
             rewards = np.array(rewards)
             print(f"  Action: {action_name:<20} | Mean: {rewards.mean():>10.4f} | Std: {rewards.std():>10.4f} | Min: {rewards.min():>10.4f} | Max: {rewards.max():>10.4f}")
 
+def test_geometric_stats():
+    """
+    测试 6: Geometric 模式下的统计特性 (Geometric Stats)
+    1. Top-P 规则下，无人机连接基站个数的统计 (均值, 最大, 最小, 方差)
+    2. Top-P 规则下，连接基站的大尺度衰落系数统计 (最大/最小值的均值和标准差)
+    """
+    print_header("测试 6: Geometric 模式统计特性 (Geometric Stats)")
+    
+    from env.cellfree.config import GEO_BETA_THRESHOLD
+    
+    top_p = 0.6
+    env = CellFreeEnv(reward_mode="geometric", top_p=top_p)
+    
+    num_scenarios = 1000
+    
+    # Storage
+    all_connection_counts = [] # Store number of connections for each UAV in each scenario
+    all_max_betas = []         # Store max beta for each UAV
+    all_min_betas = []         # Store min beta for each UAV
+    
+    print(f"正在生成 {num_scenarios} 个随机场景并分析...")
+    
+    for _ in range(num_scenarios):
+        env.reset()
+        
+        # Replicate Top-P Logic to find targets
+        for k in range(N):
+            betas = env.beta_matrix[:, k]
+            sorted_indices = np.argsort(betas)[::-1]
+            sorted_betas = betas[sorted_indices]
+            cumsum_betas = np.cumsum(sorted_betas)
+            total_beta = cumsum_betas[-1]
+            
+            cutoff_index = np.searchsorted(cumsum_betas, top_p * total_beta)
+            valid_indices = np.where(sorted_betas >= GEO_BETA_THRESHOLD)[0]
+            
+            if len(valid_indices) > 0:
+                max_valid_idx = len(valid_indices) - 1
+                rule_based_cutoff = min(cutoff_index, max_valid_idx)
+            else:
+                rule_based_cutoff = -1
+                
+            final_cutoff = max(rule_based_cutoff, 0)
+            
+            # Indices of BSs that SHOULD be connected
+            target_indices = sorted_indices[:final_cutoff + 1]
+            
+            # 1. Connection Count
+            count = len(target_indices)
+            all_connection_counts.append(count)
+            
+            # 2. Beta Stats
+            connected_betas = betas[target_indices]
+            if len(connected_betas) > 0:
+                all_max_betas.append(np.max(connected_betas))
+                all_min_betas.append(np.min(connected_betas))
+            else:
+                # Should not happen with "at least 1" rule, but for safety
+                all_max_betas.append(0.0)
+                all_min_betas.append(0.0)
+
+    # Convert to numpy arrays
+    all_connection_counts = np.array(all_connection_counts)
+    all_max_betas = np.array(all_max_betas)
+    all_min_betas = np.array(all_min_betas)
+    
+    # Logarithm processing (Avoid log(0))
+    epsilon = 1e-20
+    all_max_betas_log = np.log10(all_max_betas + epsilon)
+    all_min_betas_log = np.log10(all_min_betas + epsilon)
+    
+    print_sub_header("1. 连接基站个数统计 (Top-P Rule)")
+    print(f"  Mean: {all_connection_counts.mean():.4f}")
+    print(f"  Max:  {all_connection_counts.max()}")
+    print(f"  Min:  {all_connection_counts.min()}")
+    print(f"  Var:  {all_connection_counts.var():.4f}")
+    
+    print_sub_header("2. 大尺度衰落系数统计 (Connected BSs) [Log10 Scale]")
+    print(f"  Log10(Max Beta) per UAV - Mean: {all_max_betas_log.mean():.4f} | Std: {all_max_betas_log.std():.4f}")
+    print(f"  Log10(Min Beta) per UAV - Mean: {all_min_betas_log.mean():.4f} | Std: {all_min_betas_log.std():.4f}")
+
+def test_critic_sensitivity(model_path=None):
+    """
+    测试 7: Critic 敏感度分析 (Critic Sensitivity)
+    加载模型（如果提供），对比"好状态"和"坏状态"下的 Critic 输出值。
+    """
+    print_header("测试 7: Critic 敏感度分析 (Critic Sensitivity)")
+    
+    if model_path is None:
+        # Try to find the latest model in log/combined/sac/cellfree/
+        import glob
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'log', 'combined', 'sac', 'cellfree')
+        # Find latest directory
+        if not os.path.exists(log_dir):
+             print("[INFO] 日志目录不存在，跳过。")
+             return
+        dirs = glob.glob(os.path.join(log_dir, '*'))
+        if not dirs:
+            print("[INFO] 未找到日志目录，跳过。")
+            return
+        latest_dir = max(dirs, key=os.path.getmtime)
+        model_path = os.path.join(latest_dir, 'pretrain_final.pth')
+        if not os.path.exists(model_path):
+             # Try checking for checkpoints
+             ckpts = glob.glob(os.path.join(latest_dir, 'checkpoint_*.pth'))
+             if ckpts:
+                 model_path = max(ckpts, key=os.path.getmtime)
+             else:
+                 print(f"[INFO] 在 {latest_dir} 中未找到模型文件，跳过。")
+                 return
+
+    print(f"加载模型: {model_path}")
+    
+    # Load Model
+    try:
+        from model.sac import Actor, DuelingCritic
+        from policy import SAC
+        import torch
+        from tianshou.data import Batch
+    except ImportError:
+        print("[ERROR] 无法导入模型定义，请确保在项目根目录下运行。")
+        return
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Instantiate env to get dims
+    env = CellFreeEnv(reward_mode="geometric")
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    
+    actor = Actor(state_dim, action_dim, hidden_dim=256).to(device)
+    critic = DuelingCritic(state_dim, action_dim, hidden_dim=256).to(device)
+    actor_optim = torch.optim.Adam(actor.parameters())
+    critic_optim = torch.optim.Adam(critic.parameters())
+    
+    policy = SAC(state_dim, actor, actor_optim, critic, critic_optim)
+    
+    # Load state dict
+    try:
+        state_dict = torch.load(model_path, map_location=device)
+        policy.load_state_dict(state_dict)
+        print("模型加载成功。")
+    except Exception as e:
+        print(f"[ERROR] 模型加载失败: {e}")
+        return
+    
+    # Construct Scenarios
+    # 1. Good State: High Beta, Perfect Connection
+    env.reset()
+    # Force high beta (Strong Channel)
+    env.beta_matrix = np.ones((M, N)) * 1e-4 
+    obs_good = env._get_obs()
+    
+    # 2. Bad State: Low Beta
+    env.reset()
+    env.beta_matrix = np.ones((M, N)) * 1e-10 # Weak channel
+    obs_bad = env._get_obs()
+    
+    # Batch
+    obs_list = [obs_good, obs_bad]
+    obs_tensor = torch.tensor(np.array(obs_list), dtype=torch.float32, device=device)
+    
+    # Get Action from Policy
+    with torch.no_grad():
+        result = policy(Batch(obs=np.array(obs_list), info={}))
+        act = result.act
+        if isinstance(act, np.ndarray):
+            act_tensor = torch.tensor(act, dtype=torch.float32, device=device)
+        else:
+            act_tensor = act
+            
+        # Evaluate Critic
+        v1, a1, v2, a2 = policy._critic.get_value_details(obs_tensor, act_tensor)
+        q1 = v1 + a1
+        
+    print("\n[Critic Evaluation]")
+    print(f"Good State (Strong Channel): V={v1[0].item():.4f}, Q={q1[0].item():.4f}")
+    print(f"Bad State (Weak Channel):    V={v1[1].item():.4f}, Q={q1[1].item():.4f}")
+    print(f"Difference: V_diff={v1[0].item()-v1[1].item():.4f}, Q_diff={q1[0].item()-q1[1].item():.4f}")
+
 if __name__ == "__main__":
     print("启动 CellFreeEnv 奖励函数测试套件...")
     print(f"环境参数: M={M}, N={N}")
@@ -427,6 +607,8 @@ if __name__ == "__main__":
     test_geometric_reward_logic()
     test_vectorization_correctness()
     test_reward_distribution()
+    test_geometric_stats()
+    test_critic_sensitivity()
     
     print("\n" + "="*60)
     print(" 所有测试执行完毕")

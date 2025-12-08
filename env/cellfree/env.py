@@ -1,5 +1,6 @@
 import gymnasium as gym
 from gymnasium.spaces import Box
+from gymnasium.wrappers import NormalizeObservation, NormalizeReward
 from tianshou.env import DummyVectorEnv
 import numpy as np
 from .config import X, Y, H, M, N, P, pd, pu, TAU_P, ALPHA1, ALPHA2, XI1, XI2, CAPACITY_THRESHOLD, REWARD_VALUE, STEPS_PER_EPISODE, NOISE_POWER, CARRIER_FREQUENCY, PATH_LOSS_EXPONENT, CONNECTION_COST, REWARD_SCALE, GATE_K, GATE_TH
@@ -154,7 +155,11 @@ class CellFreeEnv(gym.Env):
 
         return self.state, reward, terminated, truncated, info
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
+        # Gymnasium API requires seed and options
+        if seed is not None:
+            self.seed(seed)
+            
         self._num_steps = 0
         self._terminated = False
 
@@ -383,21 +388,40 @@ class CellFreeEnv(gym.Env):
         np.random.seed(seed)
 
 
-def make_cellfree_env(training_num=0, test_num=0, reward_mode="physical", k_nearest=3, action_mode="raw", top_p=0.6):
+def make_cellfree_env(training_num=0, test_num=0, reward_mode="physical", k_nearest=3, action_mode="raw", top_p=0.6, norm_reward=False):
     """Cell-free UAV 环境的包装函数。
     :return: 一个元组 (单个环境, 训练环境, 测试环境)。
     """
+    def _make_env():
+        e = CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p)
+        if norm_reward:
+            e = NormalizeObservation(e)
+            e = NormalizeReward(e)
+        return e
+
     env = CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p)
     env.seed(0)
 
     train_envs, test_envs = None, None
     if training_num:
-        train_envs = DummyVectorEnv(
-            [lambda: CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p) for _ in range(training_num)])
+        train_envs = DummyVectorEnv([_make_env for _ in range(training_num)])
         train_envs.seed(0)
 
     if test_num:
-        test_envs = DummyVectorEnv(
-            [lambda: CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p) for _ in range(test_num)])
+        # For testing, we usually don't update the normalization stats, but we need to apply the normalization
+        # Ideally, we should share the stats from training envs, but for simplicity here we just apply it.
+        # Note: NormalizeReward in test envs might make evaluation metrics confusing (normalized reward).
+        # Usually we DO NOT normalize reward in test envs if we want to see real performance.
+        # But if the policy expects normalized state, we MUST normalize observation.
+        
+        def _make_test_env():
+            e = CellFreeEnv(reward_mode=reward_mode, k_nearest=k_nearest, action_mode=action_mode, top_p=top_p)
+            if norm_reward:
+                e = NormalizeObservation(e)
+                # We typically do NOT normalize reward for test envs to track real performance
+                # e = NormalizeReward(e) 
+            return e
+            
+        test_envs = DummyVectorEnv([_make_test_env for _ in range(test_num)])
         test_envs.seed(0)
     return env, train_envs, test_envs

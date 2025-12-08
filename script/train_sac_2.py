@@ -15,6 +15,7 @@ from tianshou.trainer import offpolicy_trainer
 from env import make_cellfree_env
 from policy import SAC
 from model.sac import Actor, DuelingCritic
+from env.cellfree.config import GEO_REWARD_HIT, GEO_BONUS_PERFECT, N
 import warnings
 
 # Ignore warnings
@@ -41,8 +42,8 @@ def get_args():
     
     # Pre-training args
     parser.add_argument('--pretrain-epoch', type=int, default=400)
-    parser.add_argument('--pretrain-step-per-epoch', type=int, default=100)
-    parser.add_argument('--pretrain-step-per-collect', type=int, default=1000)
+    parser.add_argument('--pretrain-step-per-epoch', type=int, default=1)
+    parser.add_argument('--pretrain-step-per-collect', type=int, default=1)
     
     # Fine-tuning args
     parser.add_argument('--finetune-epoch', type=int, default=1200)
@@ -140,6 +141,88 @@ def run_training_phase(args, phase_name, env, train_envs, test_envs, policy, epo
     def save_best_fn(policy):
         torch.save(policy.state_dict(), os.path.join(log_path, f'{phase_name}_policy.pth'))
 
+    def debug_hook(epoch, env_step):
+        """Print model output statistics at the start of each test phase."""
+        print(f"\n[Epoch {epoch}] Debugging Model Outputs:")
+        
+        # Generate a batch of sample states
+        batch_size = 32
+        # Use test_envs to generate observations. 
+        # This ensures we get normalized observations if normalization is enabled.
+        # test_envs.reset() returns a batch of observations (size = test_num).
+        # We can collect multiple batches if needed, but test_num (default 10) is usually enough for a quick check.
+        # If we want exactly batch_size (32), we can loop.
+        
+        obs_list = []
+        rew_list = []
+        current_count = 0
+        while current_count < batch_size:
+            # Reset test_envs to get new observations
+            batch_obs, _ = test_envs.reset()
+            
+            # Calculate action for these observations to get reward
+            with torch.no_grad():
+                batch_obs_tensor = torch.tensor(batch_obs, dtype=torch.float32, device=args.device)
+                mean, _, gate_logits = policy._actor(batch_obs_tensor)
+                power_val = (torch.tanh(mean) + 1) / 2
+                gate_prob = torch.sigmoid(gate_logits)
+                gate_action = (gate_prob > 0.5).float()
+                action = power_val * gate_action
+                action_np = action.cpu().numpy()
+            
+            # Step environment to get reward
+            _, rews, _, _, _ = test_envs.step(action_np)
+            
+            obs_list.append(batch_obs)
+            rew_list.append(rews)
+            current_count += len(batch_obs)
+            
+        # Concatenate and slice to get exactly batch_size
+        obs_array = np.concatenate(obs_list, axis=0)[:batch_size]
+        rew_array = np.concatenate(rew_list, axis=0)[:batch_size]
+            
+        with torch.no_grad():
+            # Prepare input tensor
+            obs_tensor = torch.tensor(obs_array, dtype=torch.float32, device=args.device)
+            
+            # Forward pass through Actor
+            # policy._actor is the underlying network (Note the underscore)
+            mean, log_std, gate_logits = policy._actor(obs_tensor)
+            
+            # Calculate derived values
+            power_raw = torch.tanh(mean) # Range [-1, 1]
+            power_val = (power_raw + 1) / 2 # Range [0, 1]
+            gate_prob = torch.sigmoid(gate_logits) # Range [0, 1]
+            
+            # Generate deterministic action for Critic evaluation
+            gate_action = (gate_prob > 0.5).float()
+            action = power_val * gate_action
+            
+            # Evaluate Critic (V and Q)
+            # policy._critic is the underlying network
+            v1, a1, v2, a2 = policy._critic.get_value_details(obs_tensor, action)
+            q1 = v1 + a1
+            q2 = v2 + a2
+            
+            # Print Statistics
+            print(f"  > Mean (Power Param):  Min={mean.min():.4f}, Max={mean.max():.4f}, Avg={mean.mean():.4f}")
+            print(f"  > Power Output (0-1):  Min={power_val.min():.4f}, Max={power_val.max():.4f}, Avg={power_val.mean():.4f}")
+            print(f"  > LogStd:              Min={log_std.min():.4f}, Max={log_std.max():.4f}, Avg={log_std.mean():.4f}")
+            print(f"  > Gate Logits:         Min={gate_logits.min():.4f}, Max={gate_logits.max():.4f}, Avg={gate_logits.mean():.4f}")
+            print(f"  > Gate Prob:           Min={gate_prob.min():.4f}, Max={gate_prob.max():.4f}, Avg={gate_prob.mean():.4f}")
+            print(f"  > Active Gates (>0.5): Ratio={(gate_prob > 0.5).float().mean():.4f}")
+            print(f"  > Critic V (State Val): Min={v1.min():.4f}, Max={v1.max():.4f}, Avg={v1.mean():.4f}")
+            print(f"  > Critic Q (Action Val): Min={q1.min():.4f}, Max={q1.max():.4f}, Avg={q1.mean():.4f}")
+            print(f"  > Env Reward (Norm):   Min={rew_array.min():.4f}, Max={rew_array.max():.4f}, Avg={rew_array.mean():.4f}")
+            print("-" * 50)
+        
+        # CRITICAL: Reset test_envs and test_collector after manual stepping
+        # This prevents "Episode has terminated" errors in the subsequent test_episode call
+        # because we manually stepped the environment to termination (len=1) above.
+        test_envs.reset()
+        test_collector.reset_env()
+        test_collector.reset_buffer() # Clear buffer to avoid stale data issues
+
     # Trainer
     result = offpolicy_trainer(
         policy,
@@ -152,6 +235,7 @@ def run_training_phase(args, phase_name, env, train_envs, test_envs, policy, epo
         args.batch_size,
         save_best_fn=save_best_fn,
         stop_fn=stop_fn,
+        test_fn=debug_hook, # Add the debug hook here
         logger=logger,
         test_in_train=False
     )
@@ -167,8 +251,9 @@ def main(args=get_args()):
     # --- Phase 1: Pre-training (Geometric Reward) ---
     print("Initializing Environment for Pre-training (Geometric)...")
     # Use Top-P logic for pre-training target
+    # Enable reward normalization to help Critic convergence
     env_geo, train_envs_geo, test_envs_geo = make_cellfree_env(
-        args.training_num, args.test_num, reward_mode="geometric", top_p=args.top_p
+        args.training_num, args.test_num, reward_mode="geometric", top_p=args.top_p, norm_reward=True
     )
     
     # Calculate Baseline Reward (All Zeros)
@@ -183,13 +268,18 @@ def main(args=get_args()):
     
     # Define stop function for pre-training
     # Geometric reward max is dynamic now.
-    # Max possible reward = (N * M_connected * GEO_REWARD_HIT) + GEO_BONUS_PERFECT
-    # Assuming avg 5 connections per UAV, N=5 -> 25 connections.
-    # Max ~ 25 * 2.0 + 10 = 60.0.
-    # Let's set a reasonable threshold, e.g., 30.0
-    print(f"Pre-training Stop Threshold: 30.0")
+    # We calculate the threshold based on the configuration parameters.
+    # Minimum Perfect Reward = (Min Connections * Reward per Hit) + Perfect Bonus
+    # Min Connections = N (Since we force at least 1 connection per UAV)
+    stop_threshold = (N * GEO_REWARD_HIT) + GEO_BONUS_PERFECT
+    
+    print(f"Pre-training Stop Threshold (Dynamic): {stop_threshold:.4f}")
+    print(f"  - N (UAVs): {N}")
+    print(f"  - Hit Reward: {GEO_REWARD_HIT}")
+    print(f"  - Perfect Bonus: {GEO_BONUS_PERFECT}")
+    
     def stop_fn_geo(mean_rewards):
-        return mean_rewards >= 30.0
+        return mean_rewards >= stop_threshold
     
     # Run Pre-training
     run_training_phase(
