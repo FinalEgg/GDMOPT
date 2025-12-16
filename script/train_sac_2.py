@@ -266,6 +266,49 @@ def main(args=get_args()):
     # Initialize Policy
     policy = setup_policy(args, env_geo, args.actor_lr, args.critic_lr)
     
+    # --- Phase 0: Critic Warm-up (Random Actions) ---
+    print("\n" + "="*50)
+    print(" Starting Phase 0: Critic Warm-up")
+    print("="*50)
+    
+    # Setup buffer for warm-up
+    warmup_buffer = VectorReplayBuffer(args.buffer_size, buffer_num=len(train_envs_geo))
+    
+    # Collect random data
+    print("Collecting random data for warm-up...")
+    # Use a random policy to collect data
+    # We can just use the policy with high exploration noise, or manually sample random actions
+    # Here we use the policy but since it's initialized randomly, it acts somewhat randomly.
+    # But to be sure, we can force random actions in collection if we wanted.
+    # For simplicity, let's just collect using the current policy (which is random initialized).
+    
+    # Actually, to ensure "completely random actions", we can use a dummy collector loop
+    # But Tianshou's Collector is convenient. Let's just use the policy.
+    # Since the policy is untrained, it outputs random actions (with high entropy).
+    
+    warmup_collector = Collector(policy, train_envs_geo, warmup_buffer)
+    warmup_collector.collect(n_step=10000, random=True) # random=True forces random actions from action space
+    
+    print(f"Collected {len(warmup_buffer)} samples.")
+    
+    # Warm-up Loop
+    warmup_epochs = 20
+    warmup_steps = 1000
+    print(f"Warming up Critic for {warmup_epochs} epochs ({warmup_steps} steps/epoch)...")
+    
+    for epoch in range(warmup_epochs):
+        losses = []
+        for _ in range(warmup_steps):
+            batch, indices = warmup_buffer.sample(args.batch_size)
+            # Update ONLY Critic
+            res = policy.learn(batch, update_actor=False)
+            losses.append(res['loss/critic'])
+            
+        avg_loss = np.mean(losses)
+        print(f"  Warm-up Epoch {epoch+1}/{warmup_epochs} | Critic Loss: {avg_loss:.4f}")
+        
+    print("Critic Warm-up Completed.\n")
+    
     # Define stop function for pre-training
     # Geometric reward max is dynamic now.
     # We calculate the threshold based on the configuration parameters.

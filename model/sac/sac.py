@@ -303,41 +303,31 @@ class Actor(nn.Module):
 
 class DuelingCritic(nn.Module):
     """
-    SAC Critic 网络 (Dueling 架构)
+    SAC Critic 网络 (Dueling 架构 + HGNN)
     
-    采用 Dueling Network 结构: Q(s, a) = V(s) + A(s, a)
+    升级版: 采用与 Actor 相同的异构图神经网络 (HGNN) 结构来提取特征。
+    保留 Dueling 架构: Q(s, a) = V(s) + A(s, a)
     
-    设计动机:
-    在 Cell-Free 场景中，环境状态 (UAV 位置、信道质量) 对奖励的影响非常大。
-    - V(s) (状态价值): 捕捉环境本身的"好坏" (Baseline)。例如，如果所有 UAV 都在边缘且信道极差，V(s) 会很低。
-    - A(s, a) (优势函数): 捕捉动作相对于当前状态平均水平的优劣。
-    
-    这种分离有助于降低方差，特别是在环境随机性很强的情况下 (如用户提到的"运气好坏")，
-    让 V 网络吸收环境偏差，A 网络专注于学习策略。
-    
-    关于 "减去均值" (Subtract Mean):
-    在离散动作 Dueling DQN 中，常使用 Q = V + (A - mean(A))。
-    在连续动作空间，计算 A 的均值需要对动作空间积分，计算成本过高。
-    因此这里采用直接相加 Q = V + A，依靠优化器自然分离 V 和 A 的功能。
+    结构:
+    - V-Stream: 输入 State (Graph)，经过 HGNN 提取特征，输出 V(s)。
+    - A-Stream: 输入 State + Action (Graph with Edge Attributes)，经过 HGNN 提取特征，输出 A(s, a)。
     """
     def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(DuelingCritic, self).__init__()
         
         self.M = M
         self.N = N
-        
-        # Dimensions
-        self.bs_feat_dim = 2 # LogBeta, Angle
-        self.uav_pos_dim = 3 # x, y, z
-        self.action_dim_per_link = 1 # Power per link (Gate 已经融合在 Action 数值中了)
         self.embed_dim = 128
         
         # ==================== Q1 Network ====================
         # --- V-Stream (State Value) ---
-        self.q1_v_uav_encoder = nn.Sequential(nn.Linear(self.uav_pos_dim, self.embed_dim), nn.ReLU())
-        self.q1_v_bs_encoder = nn.Sequential(nn.Linear(self.bs_feat_dim, self.embed_dim), nn.ReLU())
-        self.q1_v_cross = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
-        self.q1_v_self = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
+        # Encoders
+        self.q1_v_uav_enc = nn.Sequential(nn.Linear(3, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        self.q1_v_bs_emb = nn.Embedding(M, self.embed_dim)
+        self.q1_v_edge_enc = nn.Sequential(nn.Linear(2, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        # GNN Layers
+        self.q1_v_gnn = nn.ModuleList([HGNNLayer(self.embed_dim) for _ in range(2)])
+        # Head
         self.q1_v_head = nn.Sequential(
             nn.Linear(self.N * self.embed_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
@@ -345,10 +335,14 @@ class DuelingCritic(nn.Module):
         )
         
         # --- A-Stream (Advantage) ---
-        self.q1_a_uav_encoder = nn.Sequential(nn.Linear(self.uav_pos_dim, self.embed_dim), nn.ReLU())
-        self.q1_a_bs_action_encoder = nn.Sequential(nn.Linear(self.bs_feat_dim + self.action_dim_per_link, self.embed_dim), nn.ReLU())
-        self.q1_a_cross = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
-        self.q1_a_self = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
+        # Encoders
+        self.q1_a_uav_enc = nn.Sequential(nn.Linear(3, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        self.q1_a_bs_emb = nn.Embedding(M, self.embed_dim)
+        # Edge Encoder: State Feat (2) + Action (1) = 3
+        self.q1_a_edge_enc = nn.Sequential(nn.Linear(3, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        # GNN Layers
+        self.q1_a_gnn = nn.ModuleList([HGNNLayer(self.embed_dim) for _ in range(2)])
+        # Head
         self.q1_a_head = nn.Sequential(
             nn.Linear(self.N * self.embed_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
@@ -357,10 +351,10 @@ class DuelingCritic(nn.Module):
 
         # ==================== Q2 Network ====================
         # --- V-Stream ---
-        self.q2_v_uav_encoder = nn.Sequential(nn.Linear(self.uav_pos_dim, self.embed_dim), nn.ReLU())
-        self.q2_v_bs_encoder = nn.Sequential(nn.Linear(self.bs_feat_dim, self.embed_dim), nn.ReLU())
-        self.q2_v_cross = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
-        self.q2_v_self = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
+        self.q2_v_uav_enc = nn.Sequential(nn.Linear(3, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        self.q2_v_bs_emb = nn.Embedding(M, self.embed_dim)
+        self.q2_v_edge_enc = nn.Sequential(nn.Linear(2, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        self.q2_v_gnn = nn.ModuleList([HGNNLayer(self.embed_dim) for _ in range(2)])
         self.q2_v_head = nn.Sequential(
             nn.Linear(self.N * self.embed_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
@@ -368,10 +362,10 @@ class DuelingCritic(nn.Module):
         )
         
         # --- A-Stream ---
-        self.q2_a_uav_encoder = nn.Sequential(nn.Linear(self.uav_pos_dim, self.embed_dim), nn.ReLU())
-        self.q2_a_bs_action_encoder = nn.Sequential(nn.Linear(self.bs_feat_dim + self.action_dim_per_link, self.embed_dim), nn.ReLU())
-        self.q2_a_cross = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
-        self.q2_a_self = nn.MultiheadAttention(self.embed_dim, num_heads=4, batch_first=True)
+        self.q2_a_uav_enc = nn.Sequential(nn.Linear(3, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        self.q2_a_bs_emb = nn.Embedding(M, self.embed_dim)
+        self.q2_a_edge_enc = nn.Sequential(nn.Linear(3, self.embed_dim), nn.ReLU(), nn.Linear(self.embed_dim, self.embed_dim))
+        self.q2_a_gnn = nn.ModuleList([HGNNLayer(self.embed_dim) for _ in range(2)])
         self.q2_a_head = nn.Sequential(
             nn.Linear(self.N * self.embed_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
@@ -382,87 +376,69 @@ class DuelingCritic(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
+            nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def _forward_dueling_branch(self, state, action, 
-                                v_uav_enc, v_bs_enc, v_cross, v_self, v_head,
-                                a_uav_enc, a_bs_act_enc, a_cross, a_self, a_head,
-                                return_components=False):
+    def _forward_branch(self, state, action, uav_enc, bs_emb, edge_enc, gnn_layers, head, is_advantage=False):
         batch_size = state.shape[0]
         
-        # --- Parse State ---
+        # --- 1. Parse State ---
         x = state.view(batch_size, self.N, self.M * 2 + 3)
-        link_part = x[:, :, :self.M * 2].view(batch_size, self.N, self.M, 2)
-        uav_pos = x[:, :, self.M * 2:]
+        link_part = x[:, :, :self.M * 2].view(batch_size, self.N, self.M, 2) # (B, N, M, 2)
+        uav_pos = x[:, :, self.M * 2:] # (B, N, 3)
         
-        # --- V-Stream (State Value) ---
-        # 1. Embeddings
-        v_uav_emb = v_uav_enc(uav_pos).unsqueeze(2) # (Batch, N, 1, Embed)
-        v_bs_emb = v_bs_enc(link_part) # (Batch, N, M, Embed)
+        # --- 2. Initialize Features ---
+        uav_feats = uav_enc(uav_pos) # (B, N, E)
         
-        # 2. Attention
-        v_uav_flat = v_uav_emb.view(batch_size * self.N, 1, self.embed_dim)
-        v_bs_flat = v_bs_emb.view(batch_size * self.N, self.M, self.embed_dim)
+        bs_ids = torch.arange(self.M, device=state.device).expand(batch_size, -1)
+        bs_feats = bs_emb(bs_ids) # (B, M, E)
         
-        v_ctx_flat, _ = v_cross(v_uav_flat, v_bs_flat, v_bs_flat)
-        v_ctx = v_ctx_flat.view(batch_size, self.N, self.embed_dim) + v_uav_emb.squeeze(2)
-        
-        v_global, _ = v_self(v_ctx, v_ctx, v_ctx)
-        v_global = v_global + v_ctx
-        
-        # 3. Head -> V(s)
-        v_val = v_head(v_global.reshape(batch_size, -1))
-        
-        # --- A-Stream (Advantage) ---
-        # 1. Embeddings (Include Action)
-        a_uav_emb = a_uav_enc(uav_pos).unsqueeze(2)
-        
-        act = action.view(batch_size, self.N, self.M, 1)
-        bs_act_input = torch.cat([link_part, act], dim=3)
-        a_bs_act_emb = a_bs_act_enc(bs_act_input)
-        
-        # 2. Attention
-        a_uav_flat = a_uav_emb.view(batch_size * self.N, 1, self.embed_dim)
-        a_bs_act_flat = a_bs_act_emb.view(batch_size * self.N, self.M, self.embed_dim)
-        
-        a_ctx_flat, _ = a_cross(a_uav_flat, a_bs_act_flat, a_bs_act_flat)
-        a_ctx = a_ctx_flat.view(batch_size, self.N, self.embed_dim) + a_uav_emb.squeeze(2)
-        
-        a_global, _ = a_self(a_ctx, a_ctx, a_ctx)
-        a_global = a_global + a_ctx
-        
-        # 3. Head -> A(s, a)
-        a_val = a_head(a_global.reshape(batch_size, -1))
-        
-        if return_components:
-            return v_val, a_val
+        # Edge Features
+        if is_advantage:
+            # Concatenate action to edge features
+            # action: (B, N*M) -> (B, N, M, 1)
+            act = action.view(batch_size, self.N, self.M, 1)
+            edge_input = torch.cat([link_part, act], dim=-1) # (B, N, M, 3)
+            edge_feats = edge_enc(edge_input)
+        else:
+            edge_feats = edge_enc(link_part) # (B, N, M, 2)
             
-        # --- Combine ---
-        # Q(s, a) = V(s) + A(s, a)
-        return v_val + a_val
+        # Distances (for Interference)
+        p1 = uav_pos.unsqueeze(2) # (B, N, 1, 3)
+        p2 = uav_pos.unsqueeze(1) # (B, 1, N, 3)
+        uav_dists = torch.norm(p1 - p2, dim=-1, keepdim=True) # (B, N, N, 1)
+        
+        # --- 3. Message Passing ---
+        for layer in gnn_layers:
+            uav_feats, bs_feats = layer(uav_feats, bs_feats, edge_feats, uav_dists)
+            
+        # --- 4. Readout ---
+        # Flatten UAV features (B, N*E)
+        flat_feats = uav_feats.view(batch_size, -1)
+        val = head(flat_feats)
+        
+        return val
 
     def forward(self, state, action):
-        q1 = self._forward_dueling_branch(state, action,
-                                          self.q1_v_uav_encoder, self.q1_v_bs_encoder, self.q1_v_cross, self.q1_v_self, self.q1_v_head,
-                                          self.q1_a_uav_encoder, self.q1_a_bs_action_encoder, self.q1_a_cross, self.q1_a_self, self.q1_a_head)
-                                          
-        q2 = self._forward_dueling_branch(state, action,
-                                          self.q2_v_uav_encoder, self.q2_v_bs_encoder, self.q2_v_cross, self.q2_v_self, self.q2_v_head,
-                                          self.q2_a_uav_encoder, self.q2_a_bs_action_encoder, self.q2_a_cross, self.q2_a_self, self.q2_a_head)
+        # Q1
+        v1 = self._forward_branch(state, action, self.q1_v_uav_enc, self.q1_v_bs_emb, self.q1_v_edge_enc, self.q1_v_gnn, self.q1_v_head, is_advantage=False)
+        a1 = self._forward_branch(state, action, self.q1_a_uav_enc, self.q1_a_bs_emb, self.q1_a_edge_enc, self.q1_a_gnn, self.q1_a_head, is_advantage=True)
+        q1 = v1 + a1
+        
+        # Q2
+        v2 = self._forward_branch(state, action, self.q2_v_uav_enc, self.q2_v_bs_emb, self.q2_v_edge_enc, self.q2_v_gnn, self.q2_v_head, is_advantage=False)
+        a2 = self._forward_branch(state, action, self.q2_a_uav_enc, self.q2_a_bs_emb, self.q2_a_edge_enc, self.q2_a_gnn, self.q2_a_head, is_advantage=True)
+        q2 = v2 + a2
+        
         return q1, q2
 
     def get_value_details(self, state, action):
         """Helper for debugging: returns separated V and A values"""
-        # Branch 1
-        v1, a1 = self._forward_dueling_branch(state, action,
-                                          self.q1_v_uav_encoder, self.q1_v_bs_encoder, self.q1_v_cross, self.q1_v_self, self.q1_v_head,
-                                          self.q1_a_uav_encoder, self.q1_a_bs_action_encoder, self.q1_a_cross, self.q1_a_self, self.q1_a_head,
-                                          return_components=True)
-        # Branch 2
-        v2, a2 = self._forward_dueling_branch(state, action,
-                                          self.q2_v_uav_encoder, self.q2_v_bs_encoder, self.q2_v_cross, self.q2_v_self, self.q2_v_head,
-                                          self.q2_a_uav_encoder, self.q2_a_bs_action_encoder, self.q2_a_cross, self.q2_a_self, self.q2_a_head,
-                                          return_components=True)
+        v1 = self._forward_branch(state, action, self.q1_v_uav_enc, self.q1_v_bs_emb, self.q1_v_edge_enc, self.q1_v_gnn, self.q1_v_head, is_advantage=False)
+        a1 = self._forward_branch(state, action, self.q1_a_uav_enc, self.q1_a_bs_emb, self.q1_a_edge_enc, self.q1_a_gnn, self.q1_a_head, is_advantage=True)
+        
+        v2 = self._forward_branch(state, action, self.q2_v_uav_enc, self.q2_v_bs_emb, self.q2_v_edge_enc, self.q2_v_gnn, self.q2_v_head, is_advantage=False)
+        a2 = self._forward_branch(state, action, self.q2_a_uav_enc, self.q2_a_bs_emb, self.q2_a_edge_enc, self.q2_a_gnn, self.q2_a_head, is_advantage=True)
+        
         return v1, a1, v2, a2

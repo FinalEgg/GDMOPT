@@ -28,11 +28,18 @@ class DDPG(BasePolicy):
             lr_decay: bool = False,
             lr_maxt: int = 1000,
             exploration_noise: float = 0.1,
+            sparsity_coef: float = 0.01,
+            policy_noise: float = 0.2,
+            noise_clip: float = 0.5,
             **kwargs: Any
     ) -> None:
         super().__init__(**kwargs)
         assert 0.0 <= tau <= 1.0, "tau should be in [0, 1]"
         assert 0.0 <= gamma <= 1.0, "gamma should be in [0, 1]"
+
+        self.sparsity_coef = sparsity_coef
+        self._policy_noise = policy_noise
+        self._noise_clip = noise_clip
 
         # Initialize actor network and optimizer if provided
         if actor is not None:
@@ -86,6 +93,14 @@ class DDPG(BasePolicy):
         batch = buffer[indices]  # batch.obs_next: s_{t+n}
         obs_next = to_torch(batch.obs_next, device=self._device).float()
         target_act = self._target_actor(obs_next)
+        if isinstance(target_act, tuple):
+            target_act = target_act[0]
+            
+        # Target Policy Smoothing (TD3)
+        noise = torch.randn_like(target_act) * self._policy_noise
+        noise = noise.clamp(-self._noise_clip, self._noise_clip)
+        target_act = (target_act + noise).clamp(0.0, 1.0) # Action range [0, 1]
+        
         target_q = self._target_critic(obs_next, target_act)
         return torch.min(target_q[0], target_q[1])
 
@@ -106,6 +121,8 @@ class DDPG(BasePolicy):
         """Compute action over the given batch data."""
         obs = to_torch(batch.obs, device=self._device).float()
         act = self._actor(obs)
+        if isinstance(act, tuple):
+            act = act[0]
         return Batch(act=act, state=state)
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:
@@ -115,8 +132,8 @@ class DDPG(BasePolicy):
         
         # Critic update
         current_q1, current_q2 = self._critic(obs, act)
-        current_q1 = torch.clamp(current_q1, -100, 100)  # edit: Q-value clipping for regularization
-        current_q2 = torch.clamp(current_q2, -100, 100)  # edit: Q-value clipping for regularization
+        # current_q1 = torch.clamp(current_q1, -100, 100)  # Removed: causing gradient death when Q > 100
+        # current_q2 = torch.clamp(current_q2, -100, 100)  # Removed: causing gradient death when Q > 100
         target_q = batch.returns
         critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
 
@@ -126,22 +143,36 @@ class DDPG(BasePolicy):
         self._critic_optim.step()
 
         # Actor update
-        act_new = self._actor(obs)
-        actor_loss = -torch.min(*self._critic(obs, act_new)).mean()  # Use min(q1, q2) for actor update edit
+        update_actor = kwargs.get("update_actor", True)
+        actor_loss_item = 0.0
 
-        self._actor_optim.zero_grad()
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self._actor.parameters(), 1.0)  # edit: gradient clipping for regularization
-        self._actor_optim.step()
+        if update_actor:
+            act_new = self._actor(obs)
+            gate_probs = None
+            if isinstance(act_new, tuple):
+                act_new, gate_probs = act_new
+                
+            actor_loss = -torch.min(*self._critic(obs, act_new)).mean()  # Use min(q1, q2) for actor update edit
+            
+            if gate_probs is not None:
+                sparsity_loss = self.sparsity_coef * gate_probs.mean()
+                actor_loss += sparsity_loss
+
+            self._actor_optim.zero_grad()
+            actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self._actor.parameters(), 1.0)  # edit: gradient clipping for regularization
+            self._actor_optim.step()
+            actor_loss_item = actor_loss.item()
 
         # Soft update
         self.sync_weight()
 
         if self._lr_decay:
-            self._actor_lr_scheduler.step()
+            if update_actor:
+                self._actor_lr_scheduler.step()
             self._critic_lr_scheduler.step()
 
         return {
-            "loss/actor": actor_loss.item(),
+            "loss/actor": actor_loss_item,
             "loss/critic": critic_loss.item(),
         }

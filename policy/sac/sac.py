@@ -121,51 +121,59 @@ class SAC(BasePolicy):
         self._critic_optim.step()
 
         # Update actor
-        # Re-sample actions to get gradients
-        # Unpack 5 values: action, log_prob, mean, log_std, gate_probs
-        current_act, current_log_prob, _, _, gate_probs = self._actor.sample(obs)
-        q1_pi, q2_pi = self._critic(obs, current_act)
-        min_q_pi = torch.min(q1_pi, q2_pi)
-        
-        # Use current alpha
-        alpha = self._log_alpha.exp() if self._is_auto_alpha else self._alpha
-        
-        # Maximize (min_q - alpha * log_prob) -> Minimize (alpha * log_prob - min_q)
-        # Add Sparsity Loss: Minimize mean(gate_probs)
-        sparsity_loss = self.sparsity_coef * gate_probs.mean()
-        actor_loss = (alpha * current_log_prob - min_q_pi).mean() + sparsity_loss
-
-        self._actor_optim.zero_grad()
-        actor_loss.backward()
-        self._actor_optim.step()
-        
-        # Update Alpha (Auto-Tuning)
+        actor_loss_item = 0.0
         alpha_loss_item = 0.0
-        if self._is_auto_alpha:
-            # Loss = - (log_alpha * (log_prob + target_entropy)).mean()
-            # We want alpha * log_prob = alpha * (-target_entropy)
-            # So log_prob should be close to -target_entropy
-            alpha_loss = -(self._log_alpha * (current_log_prob + self._target_entropy).detach()).mean()
+        
+        # Check if we should update actor (default True)
+        update_actor = kwargs.get("update_actor", True)
+        
+        if update_actor:
+            # Re-sample actions to get gradients
+            # Unpack 5 values: action, log_prob, mean, log_std, gate_probs
+            current_act, current_log_prob, _, _, gate_probs = self._actor.sample(obs)
+            q1_pi, q2_pi = self._critic(obs, current_act)
+            min_q_pi = torch.min(q1_pi, q2_pi)
             
-            self._alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self._alpha_optim.step()
-            alpha_loss_item = alpha_loss.item()
+            # Use current alpha
+            alpha = self._log_alpha.exp() if self._is_auto_alpha else self._alpha
             
-            # Update self._alpha for logging/next step usage (though we use .exp() directly)
-            self._alpha = self._log_alpha.exp().item()
+            # Maximize (min_q - alpha * log_prob) -> Minimize (alpha * log_prob - min_q)
+            # Add Sparsity Loss: Minimize mean(gate_probs)
+            sparsity_loss = self.sparsity_coef * gate_probs.mean()
+            actor_loss = (alpha * current_log_prob - min_q_pi).mean() + sparsity_loss
+
+            self._actor_optim.zero_grad()
+            actor_loss.backward()
+            self._actor_optim.step()
+            actor_loss_item = actor_loss.item()
+            
+            # Update Alpha (Auto-Tuning)
+            if self._is_auto_alpha:
+                # Loss = - (log_alpha * (log_prob + target_entropy)).mean()
+                # We want alpha * log_prob = alpha * (-target_entropy)
+                # So log_prob should be close to -target_entropy
+                alpha_loss = -(self._log_alpha * (current_log_prob + self._target_entropy).detach()).mean()
+                
+                self._alpha_optim.zero_grad()
+                alpha_loss.backward()
+                self._alpha_optim.step()
+                alpha_loss_item = alpha_loss.item()
+                
+                # Update self._alpha for logging/next step usage (though we use .exp() directly)
+                self._alpha = self._log_alpha.exp().item()
 
         # Soft update targets
         self._soft_update(self._critic, self._target_critic, self._tau)
         
         if self._lr_decay:
-            self._actor_lr_scheduler.step()
+            if update_actor:
+                self._actor_lr_scheduler.step()
+                if self._is_auto_alpha:
+                    self._alpha_lr_scheduler.step()
             self._critic_lr_scheduler.step()
-            if self._is_auto_alpha:
-                self._alpha_lr_scheduler.step()
 
         return {
-            "loss/actor": actor_loss.item(),
+            "loss/actor": actor_loss_item,
             "loss/critic": critic_loss.item(),
             "loss/alpha": alpha_loss_item,
             "alpha": self._alpha
