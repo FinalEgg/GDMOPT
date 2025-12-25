@@ -85,6 +85,13 @@ def collect_random_data(args):
     
     # Create Collector
     policy = RandomPolicy()
+    # Tianshou's Collector will use policy(batch) to get actions if random=False.
+    # If random=True, it samples from env.action_space.
+    # However, we need to ensure the sampled actions are in [-1, 1] if using PurePowerActionWrapper.
+    # PurePowerActionWrapper sets action_space to Box(-1, 1).
+    # So env.action_space.sample() will return values in [-1, 1].
+    # This is correct for RL training.
+    
     collector = Collector(policy, envs, buffer)
     
     print(f"Collecting {args.steps} random steps...")

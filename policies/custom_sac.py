@@ -1,13 +1,36 @@
 import torch
 import torch.nn.functional as F
+import numpy as np
 from tianshou.policy import SACPolicy
 from tianshou.data import Batch
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional, Union
 
 class CustomSACPolicy(SACPolicy):
     def __init__(self, *args, sparsity_coef=0.01, **kwargs):
         super().__init__(*args, **kwargs)
         self.sparsity_coef = sparsity_coef
+
+    def forward(
+        self,
+        batch: Batch,
+        state: Optional[Union[dict, Batch, np.ndarray]] = None,
+        input: str = "obs",
+        **kwargs: Any,
+    ) -> Batch:
+        obs = batch[input]
+        (mu, sigma), hidden = self.actor(obs, state=state, info=batch.info)
+        dist = torch.distributions.Normal(mu, sigma)
+        if self._deterministic_eval and not self.training:
+            act = torch.tanh(mu)
+            log_prob = None
+        else:
+            u = dist.rsample()
+            act = torch.tanh(u)
+            # Correct log_prob for Tanh transform
+            log_prob = dist.log_prob(u).sum(dim=-1, keepdim=True) - \
+                       torch.log(1 - act.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        
+        return Batch(logits=(mu, sigma), act=act, state=hidden, dist=dist, log_prob=log_prob)
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:
         # Call super learn to get standard stats
@@ -32,11 +55,14 @@ class CustomSACPolicy(SACPolicy):
             # act_next = obs_next_result[0]
             # log_prob_next = obs_next_result[1]
             
-            # Manual sampling to ensure correct shape and gradients (though no grad here)
+            # Manual sampling with Tanh squashing (Squashed Gaussian)
             (mu, sigma), _ = self.actor(obs_next)
             dist = torch.distributions.Normal(mu, sigma)
-            act_next = dist.rsample()
-            log_prob_next = dist.log_prob(act_next).sum(dim=-1, keepdim=True)
+            u_next = dist.rsample()
+            act_next = torch.tanh(u_next)
+            # Correct log_prob for Tanh transform
+            log_prob_next = dist.log_prob(u_next).sum(dim=-1, keepdim=True) - \
+                            torch.log(1 - act_next.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
             
             target_q1 = self.critic1_old(obs_next, act_next)
             target_q2 = self.critic2_old(obs_next, act_next)
@@ -69,8 +95,11 @@ class CustomSACPolicy(SACPolicy):
         
         (mu, sigma), _ = self.actor(obs)
         dist = torch.distributions.Normal(mu, sigma)
-        act_new = dist.rsample()
-        log_prob = dist.log_prob(act_new).sum(dim=-1, keepdim=True)
+        u_new = dist.rsample()
+        act_new = torch.tanh(u_new)
+        # Correct log_prob for Tanh transform
+        log_prob = dist.log_prob(u_new).sum(dim=-1, keepdim=True) - \
+                   torch.log(1 - act_new.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         
         current_q1a = self.critic1(obs, act_new)
         current_q2a = self.critic2(obs, act_new)

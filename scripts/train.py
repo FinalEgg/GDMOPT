@@ -58,6 +58,13 @@ def get_args():
     parser.add_argument('--alpha', type=float, default=TrainConfig.ALPHA) # SAC entropy
     parser.add_argument('--auto-alpha', default=TrainConfig.AUTO_ALPHA, action='store_true')
 
+    # Diffusion Specific
+    parser.add_argument('--diffusion-steps', type=int, default=TrainConfig.DIFFUSION_STEPS)
+    parser.add_argument('--diffusion-beta-schedule', type=str, default=TrainConfig.DIFFUSION_BETA_SCHEDULE)
+    parser.add_argument('--lr-decay', default=TrainConfig.LR_DECAY, action='store_true')
+    parser.add_argument('--lr-maxt', type=int, default=TrainConfig.LR_MAXT)
+    parser.add_argument('--bc-coef', default=TrainConfig.BC_COEF, action='store_true')
+
     return parser.parse_args()
 
 def make_env(env_name, config, action_mode='threshold'):
@@ -182,8 +189,8 @@ def main():
                 action_dim=a_dim,
                 model=net,
                 max_action=max_action,
-                beta_schedule='vp', 
-                n_timesteps=5, 
+                beta_schedule=args.diffusion_beta_schedule, 
+                n_timesteps=args.diffusion_steps, 
             ).to(args.device)
             
             critic_optim = torch.optim.Adam(critic.parameters(), lr=args.lr)
@@ -245,7 +252,10 @@ def main():
             tau=args.tau,
             gamma=args.gamma,
             exploration_noise=args.exploration_noise,
-            action_space=env_instance.action_space
+            action_space=env_instance.action_space,
+            lr_decay=args.lr_decay,
+            lr_maxt=args.lr_maxt,
+            bc_coef=args.bc_coef
         )
     elif args.algo == 'td3':
         policy = CustomTD3Policy(
@@ -264,6 +274,14 @@ def main():
             action_space=env_instance.action_space
         )
     elif args.algo == 'sac':
+        if args.auto_alpha:
+            target_entropy = -np.prod(env_instance.action_space.shape)
+            log_alpha = torch.zeros(1, requires_grad=True, device=args.device)
+            alpha_optim = torch.optim.Adam([log_alpha], lr=args.lr)
+            alpha = (target_entropy, log_alpha, alpha_optim)
+        else:
+            alpha = args.alpha
+
         policy = CustomSACPolicy(
             actor,
             actor_optim,
@@ -273,11 +291,11 @@ def main():
             critic2_optim,
             tau=args.tau,
             gamma=args.gamma,
-            alpha=args.alpha,
+            alpha=alpha,
             action_space=env_instance.action_space
         )
-        if args.auto_alpha:
-            policy.set_alpha(args.alpha) # Tianshou handles auto alpha internally if configured
+        # if args.auto_alpha:
+        #     policy.set_alpha(args.alpha) # Tianshou handles auto alpha internally if configured
 
     # 4. Collector
     if args.algo in ['ddpg', 'td3']:
@@ -349,6 +367,7 @@ def main():
     )
     
     print(f"Training finished! Result: {result}")
+    # print("Pretraining finished. Skipping formal RL training.")
 
 if __name__ == '__main__':
     main()

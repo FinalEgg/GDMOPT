@@ -223,8 +223,11 @@ def pretrain_critic(policy, train_collector, logger, steps=5000, batch_size=256,
                             # SAC uses current actor for target calculation
                             (mu, sigma), _ = policy.actor(batch.obs_next)
                             dist = torch.distributions.Normal(mu, sigma)
-                            target_act = dist.rsample()
-                            log_prob_next = dist.log_prob(target_act).sum(dim=-1, keepdim=True)
+                            u_next = dist.rsample()
+                            target_act = torch.tanh(u_next)
+                            # Correct log_prob for Tanh transform
+                            log_prob_next = dist.log_prob(u_next).sum(dim=-1, keepdim=True) - \
+                                            torch.log(1 - target_act.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
                             
                             target_q1 = policy.critic1_old(batch.obs_next, target_act)
                             target_q2 = policy.critic2_old(batch.obs_next, target_act)
@@ -359,9 +362,10 @@ def pretrain_actor_supervised(policy, dataset_path, epochs=100, batch_size=256, 
                 actor_out = policy.actor(batch_obs)[0]
                 if isinstance(actor_out, tuple):
                     # SAC: (mean, std)
-                    pred_act = actor_out[0]
+                    # Apply Tanh to mean to match the [-1, 1] action space of the dataset
+                    pred_act = torch.tanh(actor_out[0])
                 else:
-                    # DDPG/TD3: action
+                    # DDPG/TD3: action (Already Tanh)
                     pred_act = actor_out
                 
                 # MSE Loss

@@ -21,7 +21,7 @@ class DeepSetsActor(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, self.action_per_uav),
-            nn.Sigmoid() # Output in [0, 1]
+            nn.Tanh() # Output in [-1, 1]
         )
         
     def forward(self, obs, state=None, info={}):

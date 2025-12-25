@@ -88,7 +88,8 @@ class TrainConfig:
     # --- TD3 / DDPG ---
     # 探索噪声 (Exploration Noise)
     # 在动作中添加的高斯噪声标准差，用于促进探索
-    EXPLORATION_NOISE = 0.2
+    # 对于复杂的优化问题，较小的噪声 (0.1) 可能更稳定
+    EXPLORATION_NOISE = 0.1
     
     # --- TD3 Only ---
     # 策略噪声 (Policy Noise)
@@ -110,7 +111,26 @@ class TrainConfig:
     
     # 自动调整 Alpha
     # 是否自动学习最佳的熵系数
-    AUTO_ALPHA = False
+    AUTO_ALPHA = True
+
+    # --- Diffusion Only ---
+    # 扩散步数 (Timesteps)
+    # 5步通常足够用于优化问题，且推理速度快
+    DIFFUSION_STEPS = 5
+    
+    # Beta 调度策略 ('linear', 'cosine', 'vp')
+    DIFFUSION_BETA_SCHEDULE = 'vp'
+    
+    # 学习率衰减
+    # 有助于模型收敛到更优解
+    LR_DECAY = True
+    
+    # 学习率衰减最大步数
+    LR_MAXT = 200000
+    
+    # 行为克隆系数 (Behavior Cloning Coefficient)
+    # 如果为 True，则使用 BC Loss
+    BC_COEF = False
     
     # =========================================================================
     # 预训练阶段 (Pretraining Stages)
@@ -118,10 +138,8 @@ class TrainConfig:
     
     # Critic 预热步数
     # 在正式训练前，使用随机数据预训练 Critic 的步数
-    PRETRAIN_CRITIC_STEPS = 1000000
+    PRETRAIN_CRITIC_STEPS = 200000
     
     # Actor 监督学习轮数
     # 注意：这里的 Epoch 是监督学习的概念，指遍历一次完整的预训练数据集。
-    # 这与正式训练中的 STEP_PER_EPOCH (RL更新步数) 不同。
-    # 例如：若数据集有 10k 样本，Batch=256，则 1 Epoch ≈ 39 次更新。
-    PRETRAIN_ACTOR_EPOCHS = 30000
+    PRETRAIN_ACTOR_EPOCHS = 10000

@@ -36,9 +36,10 @@ class GeneticAlgorithmSearch:
             mutation_rate (float): 变异概率。每个基因发生变异的概率。默认 0.2。
             mutation_scale (float): 变异噪声的标准差。变异时添加的高斯噪声强度。默认 0.1。
         """
-        self.env = env
-        self.M = env.M # 基站数量
-        self.N = env.N # 无人机数量
+        # 确保访问的是原始环境，以获取物理参数
+        self.env = env.unwrapped if hasattr(env, 'unwrapped') else env
+        self.M = self.env.M # 基站数量
+        self.N = self.env.N # 无人机数量
         self.pop_size = pop_size
         self.num_generations = num_generations
         self.elite_size = int(pop_size * elite_ratio)
@@ -46,11 +47,11 @@ class GeneticAlgorithmSearch:
         self.mutation_scale = mutation_scale
         
         # 缓存环境的关键物理参数，避免重复访问
-        self.pd = env.config.pd # 下行链路功率缩放因子
-        self.noise_power = env.config.NOISE_POWER # 噪声功率
-        self.top_p_threshold = env.config.TOP_P_THRESHOLD # Top-P 阈值系数
-        self.geo_beta_threshold = env.config.GEO_BETA_THRESHOLD # 几何 Beta 阈值
-        self.k_max = env.k_max # 最大连接数限制
+        self.pd = self.env.config.pd # 下行链路功率缩放因子
+        self.noise_power = self.env.config.NOISE_POWER # 噪声功率
+        self.top_p_threshold = self.env.config.TOP_P_THRESHOLD # Top-P 阈值系数
+        self.geo_beta_threshold = self.env.config.GEO_BETA_THRESHOLD # 几何 Beta 阈值
+        self.k_max = self.env.k_max # 最大连接数限制
 
     def search(self, obs):
         """
@@ -119,8 +120,29 @@ class GeneticAlgorithmSearch:
             num_offspring_needed = self.pop_size - self.elite_size
             population = np.vstack((elites, offspring[:num_offspring_needed]))
             
-        # 返回最优个体，并扁平化以符合环境动作空间的格式
-        return best_individual.flatten()
+        # --- Post-Processing for Data Collection ---
+        # 1. Get the best raw individual
+        best_raw = best_individual # (M, N) in [0, 1]
+        
+        # 2. Apply Mask (Set disconnected links to 0)
+        # Note: top_p_mask is (M, N)
+        masked_action = best_raw * top_p_mask
+        
+        # 3. Apply Power Normalization (Sum <= 1)
+        bs_total_power = np.sum(masked_action, axis=1) # (M,)
+        scaling_factors = np.ones(self.M)
+        overloaded_mask = bs_total_power > 1.0
+        scaling_factors[overloaded_mask] = 1.0 / (bs_total_power[overloaded_mask] + 1e-9)
+        final_action = masked_action * scaling_factors[:, None]
+        
+        # 4. Inverse Map to [-1, 1] for RL Agent
+        # RL Agent (Tanh) -> [-1, 1] -> Wrapper -> [0, 1]
+        # So we need to save data in [-1, 1] domain.
+        # Formula: y = (x + 1) / 2  =>  x = y * 2 - 1
+        rl_action = final_action * 2.0 - 1.0
+        
+        # 返回处理后的动作，符合 RL Agent 的输出空间 [-1, 1]
+        return rl_action.flatten()
 
     def get_baseline_reward(self):
         """
@@ -359,6 +381,8 @@ def collect_demonstration_data(env, num_episodes=100, save_path='demonstration_d
     obs_list = []
     act_list = []
     rew_list = []
+    obs_next_list = []
+    done_list = []
     baseline_rew_list = []
     
     print(f"Starting GA-based data collection for {num_episodes} episodes...")
@@ -377,14 +401,18 @@ def collect_demonstration_data(env, num_episodes=100, save_path='demonstration_d
             # 3. Execute Action
             # 注意：step 会改变环境内部状态（如 _num_steps），但对于单步优化问题影响不大
             # 只要我们每次都 reset 即可。
-            _, reward, _, _, _ = env.step(best_action)
+            next_obs, reward, terminated, truncated, _ = env.step(best_action)
+            done = terminated or truncated
             
             # 4. Process Observation
             flat_obs = flatten_obs_with_env(obs, env)
+            flat_next_obs = flatten_obs_with_env(next_obs, env)
             
             obs_list.append(flat_obs)
             act_list.append(best_action)
             rew_list.append(reward)
+            obs_next_list.append(flat_next_obs)
+            done_list.append(done)
             baseline_rew_list.append(baseline_rew)
             
             if (i + 1) % 10 == 0:
@@ -400,6 +428,8 @@ def collect_demonstration_data(env, num_episodes=100, save_path='demonstration_d
                      obs=np.array(obs_list), 
                      act=np.array(act_list), 
                      rew=np.array(rew_list),
+                     obs_next=np.array(obs_next_list),
+                     done=np.array(done_list),
                      baseline_rew=np.array(baseline_rew_list))
             print("Done.")
         else:
@@ -410,21 +440,14 @@ def flatten_obs_with_env(obs_dict, env):
     将 FixTopPEnv 的 Dict 观测扁平化为 (N * 53) 的向量。
     用于适配 DeepSets 网络的输入格式。
     
-    输入 obs_dict 包含：
-    - 'log_beta': (M, N)
-    - 'angle': (M, N)
-    - 'uav_pos': (N, 3)
-    
-    输出向量结构 (Per UAV):
-    [
-      BS_1_Feats (5 dims: log_beta, sin, cos, bs_x, bs_y),
-      BS_2_Feats,
-      ...,
-      BS_M_Feats,
-      UAV_Self_Feats (3 dims: x, y, z)
-    ]
-    总维度: N * (M * 5 + 3) = N * 53
+    如果输入已经是扁平化的 numpy 数组，则直接返回。
     """
+    if isinstance(obs_dict, np.ndarray):
+        return obs_dict
+
+    # 确保访问的是原始环境
+    env = env.unwrapped if hasattr(env, 'unwrapped') else env
+    
     N = env.N
     M = env.M
     
@@ -463,11 +486,18 @@ def flatten_obs_with_env(obs_dict, env):
 if __name__ == "__main__":
     import sys
     import os
+    import argparse
+    
     # Add project root to path
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
     from config.default_config import DefaultConfig
     from envs.fix_topp_env import FixTopPEnv
+    from envs.wrappers import PurePowerActionWrapper
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--num-episodes', type=int, default=100000, help='Number of episodes to collect')
+    args = parser.parse_args()
     
     # Create log directory if not exists
     if not os.path.exists('log'):
@@ -475,6 +505,8 @@ if __name__ == "__main__":
         
     config = DefaultConfig()
     env = FixTopPEnv(config)
+    # 必须使用 Wrapper，因为 GA 返回的是 [-1, 1] 的动作，而原始环境期望 [0, 1]
+    env = PurePowerActionWrapper(env)
     
     save_path = os.path.join('log', 'demonstration_data.npz')
-    collect_demonstration_data(env, num_episodes=100000, save_path=save_path)
+    collect_demonstration_data(env, num_episodes=args.num_episodes, save_path=save_path)

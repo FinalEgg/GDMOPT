@@ -52,9 +52,7 @@ class DefaultConfig:
     
     # Reward Scaling
     # 将奖励放大以便于神经网络训练 (建议目标范围在 1.0 ~ 10.0 之间)
-    # 原值 10.0 导致奖励过大 (-160 ~ 120)，导致 Critic Loss 极高且难以收敛
-    # 修改为 0.1，使奖励范围约为 -1.6 ~ 1.2
-    REWARD_SCALE = 0.1
+    REWARD_SCALE = 10
 
     @classmethod
     def to_dict(cls):

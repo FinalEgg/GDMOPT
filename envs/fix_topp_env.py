@@ -35,16 +35,6 @@ class FixTopPEnv(BaseCellFreeEnv):
             self.connection_matrix = np.zeros((self.M, self.N))
             self.power_matrix = np.zeros((self.M, self.N))
 
-        # Observation Space
-        # Per UAV: 
-        #   For each BS (M): [LogBeta, SinAngle, CosAngle, NormBS_X, NormBS_Y] -> 5 features
-        #   UAV Self: [NormX, NormY, NormZ] -> 3 features
-        # Total per UAV: M * 5 + 3
-        self.features_per_bs = 5
-        self.uav_feature_dim = self.M * self.features_per_bs + 3
-        obs_dim = self.N * self.uav_feature_dim
-        self._observation_space = Box(low=-np.inf, high=np.inf, shape=(obs_dim,))
-
         # Action Space: Power Matrix (M * N)
         action_dim = self.M * self.N
         self._action_space = Box(low=0, high=1, shape=(action_dim,))
