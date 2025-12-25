@@ -21,6 +21,11 @@ def main():
     parser.add_argument('--env', type=str, default='fix_topp', help="Environment name")
     parser.add_argument('--backbone', type=str, default='deepsets', help="Backbone network")
     
+    # Stages
+    parser.add_argument('--do-warmup', action='store_true', default=True, help='Whether to perform critic warmup')
+    parser.add_argument('--do-pretrain', action='store_true', default=True, help='Whether to perform actor pretraining')
+    parser.add_argument('--do-rl', action='store_true', default=True, help='Whether to perform formal RL training')
+    
     args = parser.parse_args()
     
     # Ensure we are in the project root
@@ -36,6 +41,13 @@ def main():
         print(f"{'='*50}")
         
         cmd = f"python scripts/train.py --env {args.env} --algo {algo} --backbone {args.backbone}"
+        if args.do_warmup:
+            cmd += " --do-warmup"
+        if args.do_pretrain:
+            cmd += " --do-pretrain"
+        if args.do_rl:
+            cmd += " --do-rl"
+            
         run_command(cmd)
         
     print("\nAll selected algorithms finished successfully!")

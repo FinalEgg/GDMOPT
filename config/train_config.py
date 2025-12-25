@@ -15,8 +15,8 @@ class TrainConfig:
     ENV = 'fix_topp'
     
     # 强化学习算法
-    # 可选: 'td3' (推荐), 'ddpg', 'sac'
-    ALGO = 'td3'
+    # 可选: 'td3' , 'ddpg', 'sac'
+    ALGO = 'sac'
     
     # 神经网络骨干架构
     # 可选: 'deepsets' (推荐, 适合置换不变性), 'gnn' (图神经网络), 'mlp' (普通全连接)
@@ -81,6 +81,11 @@ class TrainConfig:
     # 用于目标网络 (Target Network) 的平滑更新
     TAU = 0.005
     
+    # 奖励归一化 (Reward Normalization)
+    # 是否开启 Tianshou 自带的奖励归一化 (基于移动平均)
+    # 这有助于稳定训练，特别是当奖励值规模较大时
+    REWARD_NORMALIZATION = True
+    
     # =========================================================================
     # 算法特定参数 (Algorithm Specific)
     # =========================================================================
@@ -133,13 +138,21 @@ class TrainConfig:
     BC_COEF = False
     
     # =========================================================================
-    # 预训练阶段 (Pretraining Stages)
+    # 预训练与预热配置 (Pretrain & Warmup)
     # =========================================================================
     
-    # Critic 预热步数
-    # 在正式训练前，使用随机数据预训练 Critic 的步数
-    PRETRAIN_CRITIC_STEPS = 200000
+    # --- 1. Critic Warmup (随机数据阶段) ---
+    # 采集多少步随机数据用于 Warmup
+    WARMUP_STEPS = 100000
     
-    # Actor 监督学习轮数
-    # 注意：这里的 Epoch 是监督学习的概念，指遍历一次完整的预训练数据集。
-    PRETRAIN_ACTOR_EPOCHS = 10000
+    # 使用随机数据训练 Critic 多少轮 (Epochs)
+    # 1 Epoch = 遍历一次随机数据集
+    WARMUP_EPOCHS = 100
+    
+    # --- 2. Actor Pretrain (演示数据阶段) ---
+    # 采集多少条演示数据 (Episodes)
+    # 使用遗传算法 (GA) 生成高质量数据
+    PRETRAIN_EPISODES = 100000
+    
+    # 使用演示数据监督学习训练 Actor 多少轮 (Epochs)
+    PRETRAIN_EPOCHS = 100

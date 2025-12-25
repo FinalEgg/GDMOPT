@@ -33,13 +33,6 @@ class CustomSACPolicy(SACPolicy):
         return Batch(logits=(mu, sigma), act=act, state=hidden, dist=dist, log_prob=log_prob)
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:
-        # Call super learn to get standard stats
-        result = super().learn(batch, **kwargs)
-        
-        # Add Q-value stats manually
-        # We need to re-calculate Q-values or just accept we can't get them easily without full override.
-        # Full override is safer for "Detailed Tensorboard".
-        
         # Re-implementing learn to capture Q-values
         device = next(self.actor.parameters()).device
         batch.to_torch(dtype=torch.float32, device=device)

@@ -494,9 +494,10 @@ if __name__ == "__main__":
     from config.default_config import DefaultConfig
     from envs.fix_topp_env import FixTopPEnv
     from envs.wrappers import PurePowerActionWrapper
+    from config.train_config import TrainConfig
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num-episodes', type=int, default=100000, help='Number of episodes to collect')
+    parser.add_argument('--num-episodes', type=int, default=TrainConfig.PRETRAIN_EPISODES, help='Number of episodes to collect')
     args = parser.parse_args()
     
     # Create log directory if not exists

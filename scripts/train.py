@@ -58,12 +58,20 @@ def get_args():
     parser.add_argument('--alpha', type=float, default=TrainConfig.ALPHA) # SAC entropy
     parser.add_argument('--auto-alpha', default=TrainConfig.AUTO_ALPHA, action='store_true')
 
+    parser.add_argument('--rew-norm', action='store_true', default=TrainConfig.REWARD_NORMALIZATION, help='Normalize reward')
+
     # Diffusion Specific
     parser.add_argument('--diffusion-steps', type=int, default=TrainConfig.DIFFUSION_STEPS)
     parser.add_argument('--diffusion-beta-schedule', type=str, default=TrainConfig.DIFFUSION_BETA_SCHEDULE)
     parser.add_argument('--lr-decay', default=TrainConfig.LR_DECAY, action='store_true')
     parser.add_argument('--lr-maxt', type=int, default=TrainConfig.LR_MAXT)
     parser.add_argument('--bc-coef', default=TrainConfig.BC_COEF, action='store_true')
+
+    # Stages
+    parser.add_argument('--do-warmup', action='store_true', default=False, help='Whether to perform critic warmup')
+    parser.add_argument('--do-pretrain', action='store_true', default=False, help='Whether to perform actor pretraining')
+    parser.add_argument('--do-rl', action='store_true', default=False, help='Whether to perform formal RL training')
+    parser.add_argument('--load-pretrained', type=str, default=None, help='Path to pretrained policy checkpoint to load')
 
     return parser.parse_args()
 
@@ -124,7 +132,7 @@ def main():
     
     # 1. Environment
     # Use DummyVectorEnv for simple parallelization/compatibility
-    train_envs = DummyVectorEnv([lambda: make_env(args.env, config, args.action_mode) for _ in range(1)])
+    # train_envs = DummyVectorEnv([lambda: make_env(args.env, config, args.action_mode) for _ in range(1)])
     
     # For test_envs, we wrap it to scale reward by 1/STEPS so that the "sum" displayed by Tianshou is actually the "mean"
     def make_test_env():
@@ -136,6 +144,55 @@ def main():
         env = TransformReward(env, lambda r: r / config.STEPS_PER_EPISODE / config.REWARD_SCALE)
         return env
 
+    # Apply the same wrapper to train_envs for consistent logging
+    def make_train_env():
+        env = make_env(args.env, config, args.action_mode)
+        from gymnasium.wrappers import TransformReward, NormalizeReward
+        
+        # 1. Normalize Reward (Center and Scale)
+        # This is the standard way to handle reward normalization in Tianshou for SAC/DDPG
+        if args.rew_norm:
+            env = NormalizeReward(env)
+            
+        # 2. Scale reward to display mean reward per step
+        # Note: If NormalizeReward is used, this scaling applies to the normalized reward.
+        # But usually we want NormalizeReward to handle the scaling.
+        # However, the user wants consistent logging.
+        # If we use NormalizeReward, the reward is already scaled to ~unit variance.
+        # Dividing by 1000 again would make it tiny.
+        # So we should ONLY apply the division if NOT normalizing, OR apply it before normalizing?
+        # NormalizeReward wraps the env. It sees the reward returned by inner env.
+        # If inner env returns Sum Rate (e.g. 30), NormalizeReward will shift/scale it.
+        
+        # Let's apply the division wrapper FIRST (inner), so NormalizeReward sees "per step reward".
+        # env = TransformReward(env, lambda r: r / config.STEPS_PER_EPISODE / config.REWARD_SCALE)
+        
+        # Actually, let's stick to the user's request: "Keep reward-norm configuration".
+        # If args.rew_norm is True, we use NormalizeReward.
+        # And we also want the division for logging consistency?
+        # If we use NormalizeReward, the value is abstract (z-score). It doesn't have physical meaning "per step".
+        # But it's good for training.
+        
+        # Let's just use NormalizeReward if requested.
+        # And remove the manual division if normalizing, because z-score is already small.
+        
+        if not args.rew_norm:
+             env = TransformReward(env, lambda r: r / config.STEPS_PER_EPISODE / config.REWARD_SCALE)
+             
+        return env
+
+    train_envs = DummyVectorEnv([make_train_env for _ in range(1)])
+    # test_envs = DummyVectorEnv([make_test_env for _ in range(1)]) # Re-use logic?
+    
+    # For test_envs, we usually want REAL rewards, not normalized.
+    # So test_envs should NOT have NormalizeReward.
+    # But we still want the division to show "per step" reward.
+    def make_test_env():
+        env = make_env(args.env, config, args.action_mode)
+        from gymnasium.wrappers import TransformReward
+        env = TransformReward(env, lambda r: r / config.STEPS_PER_EPISODE / config.REWARD_SCALE)
+        return env
+        
     test_envs = DummyVectorEnv([make_test_env for _ in range(1)])
     
     # Get shape from a single instance
@@ -238,6 +295,8 @@ def main():
             tau=args.tau,
             gamma=args.gamma,
             exploration_noise=None, # Handled in collector
+            reward_normalization=False, # Handled by Env Wrapper
+            estimation_step=1,
             action_space=env_instance.action_space
         )
     elif args.algo == 'diffusion':
@@ -252,6 +311,8 @@ def main():
             tau=args.tau,
             gamma=args.gamma,
             exploration_noise=args.exploration_noise,
+            reward_normalization=False, # Handled by Env Wrapper
+            estimation_step=1,
             action_space=env_instance.action_space,
             lr_decay=args.lr_decay,
             lr_maxt=args.lr_maxt,
@@ -271,6 +332,8 @@ def main():
             policy_noise=args.policy_noise,
             update_actor_freq=args.update_actor_freq,
             noise_clip=args.noise_clip,
+            reward_normalization=False, # Handled by Env Wrapper
+            estimation_step=1,
             action_space=env_instance.action_space
         )
     elif args.algo == 'sac':
@@ -291,6 +354,8 @@ def main():
             critic2_optim,
             tau=args.tau,
             gamma=args.gamma,
+            reward_normalization=False, # Handled by Env Wrapper
+            estimation_step=1,
             alpha=alpha,
             action_space=env_instance.action_space
         )
@@ -304,6 +369,15 @@ def main():
     elif args.algo == 'diffusion':
         # Diffusion policy handles exploration internally or via noise injection in forward
         pass
+
+    # Load Pretrained Policy if provided
+    if args.load_pretrained:
+        if os.path.exists(args.load_pretrained):
+            print(f"Loading pretrained policy from {args.load_pretrained}")
+            policy.load_state_dict(torch.load(args.load_pretrained, map_location=args.device))
+        else:
+            print(f"Error: Pretrained file not found at {args.load_pretrained}")
+            sys.exit(1)
 
     train_collector = Collector(policy, train_envs, VectorReplayBuffer(args.buffer_size, buffer_num=len(train_envs)))
     test_collector = Collector(policy, test_envs)
@@ -340,33 +414,40 @@ def main():
         collect_demonstration_data(collect_env, num_episodes=100, save_path=dataset_path)
 
     # 1. Critic Warmup
-    # Collect random data first
-    # print("Warming up buffer with random actions...")
-    # train_collector.collect(n_step=10000, random=True)
-    
-    warmup_data_path = os.path.join(args.logdir, 'random_data.npz')
-    pretrain_critic(policy, train_collector, logger, steps=TrainConfig.PRETRAIN_CRITIC_STEPS, save_path=warmup_data_path)
+    if args.do_warmup:
+        # Collect random data first
+        # print("Warming up buffer with random actions...")
+        # train_collector.collect(n_step=10000, random=True)
+        
+        warmup_data_path = os.path.join(args.logdir, 'random_data.npz')
+        pretrain_critic(policy, train_collector, logger, epochs=TrainConfig.WARMUP_EPOCHS, save_path=warmup_data_path)
     
     # 2. Actor Pretraining
-    pretrain_actor_supervised(policy, dataset_path, epochs=TrainConfig.PRETRAIN_ACTOR_EPOCHS, logger=logger)
+    if args.do_pretrain:
+        pretrain_actor_supervised(policy, dataset_path, epochs=TrainConfig.PRETRAIN_EPOCHS, logger=logger)
+        # Save pretrained policy
+        pretrained_path = os.path.join(log_path, 'policy_pretrained.pth')
+        torch.save(policy.state_dict(), pretrained_path)
+        print(f"Pretrained policy saved to {pretrained_path}")
     
     # --- End New Stages ---
     
     # 6. Trainer
-    result = offpolicy_trainer(
-        policy,
-        train_collector,
-        test_collector,
-        max_epoch=args.epoch,
-        step_per_epoch=args.step_per_epoch,
-        step_per_collect=args.collect_per_step,
-        episode_per_test=10,
-        batch_size=args.batch_size,
-        logger=logger,
-        save_best_fn=lambda policy: torch.save(policy.state_dict(), os.path.join(log_path, 'policy.pth'))
-    )
-    
-    print(f"Training finished! Result: {result}")
+    if args.do_rl:
+        result = offpolicy_trainer(
+            policy,
+            train_collector,
+            test_collector,
+            max_epoch=args.epoch,
+            step_per_epoch=args.step_per_epoch,
+            step_per_collect=args.collect_per_step,
+            episode_per_test=10,
+            batch_size=args.batch_size,
+            logger=logger,
+            save_best_fn=lambda policy: torch.save(policy.state_dict(), os.path.join(log_path, 'policy.pth'))
+        )
+        
+        print(f"Training finished! Result: {result}")
     # print("Pretraining finished. Skipping formal RL training.")
 
 if __name__ == '__main__':

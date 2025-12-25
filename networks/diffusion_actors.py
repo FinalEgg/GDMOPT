@@ -60,12 +60,11 @@ class DeepSetsDiffusionModel(nn.Module):
         
         # Decoder
         # Input: Hidden (from encoder) + Time Embedding
-        # We concatenate Time Embedding to Hidden?
-        # Hidden is (B, N, H). Time is (B, T).
-        # Expand Time to (B, N, T).
+        # Encoder output is (B, N, 3*Hidden) because it fuses Local + Global(Max) + Global(Sum)
+        encoder_out_dim = self.encoder.output_dim # hidden_dim * 3
         
         self.mid_layer = nn.Sequential(
-            nn.Linear(hidden_dim + t_dim, hidden_dim),
+            nn.Linear(encoder_out_dim + t_dim, hidden_dim),
             nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Mish(),
@@ -84,33 +83,19 @@ class DeepSetsDiffusionModel(nn.Module):
         state_reshaped = state.view(batch_size, self.num_uavs, self.state_per_uav)
         
         combined = torch.cat([state_reshaped, x_reshaped], dim=2) # (B, N, S_i+A_i)
-        combined_flat = combined.view(batch_size, -1) # DeepSetsEncoder expects flat input if features_per_entity is set?
-        # Wait, DeepSetsEncoder implementation:
-        # x = x.view(batch_size, self.num_uavs, self.state_per_uav)
-        # So we should pass flat input.
+        combined_flat = combined.view(batch_size, -1) 
         
         # Encode
-        # Note: DeepSetsEncoder usually does Global Pooling.
-        # But for Diffusion, we want to predict noise PER ENTITY (per UAV).
-        # So we should NOT use the global pooling output of DeepSetsEncoder.
-        # We need the LOCAL features.
-        
-        # Let's check DeepSetsEncoder again.
-        # It returns `global_feat` (B, Hidden).
-        # It has `self.local_encoder`.
-        
-        # I should access `self.encoder.local_encoder` directly?
-        # Or modify DeepSetsEncoder to return local features?
-        # Or just use `self.encoder.local_encoder` here.
-        
-        local_feat = self.encoder.local_encoder(combined) # (B, N, Hidden)
+        # Use the full encoder forward pass to get Fused features (Local + Global)
+        # Output: (B, N, 3*Hidden)
+        fused_feat = self.encoder(combined_flat)
         
         # Time Embedding
         t_emb = self.time_mlp(time) # (B, T_dim)
         t_emb_expanded = t_emb.unsqueeze(1).expand(-1, self.num_uavs, -1) # (B, N, T_dim)
         
         # Concatenate
-        feat = torch.cat([local_feat, t_emb_expanded], dim=2) # (B, N, Hidden+T_dim)
+        feat = torch.cat([fused_feat, t_emb_expanded], dim=2) # (B, N, 3*Hidden+T_dim)
         
         # Decode
         out = self.mid_layer(feat) # (B, N, A_i)

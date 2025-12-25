@@ -54,7 +54,7 @@ class DeepSetsEncoder(nn.Module):
             nn.ReLU(),
         )
         
-        self.output_dim = hidden_dim * 2 # Local + Global
+        self.output_dim = hidden_dim * 3 # Local + Global (Max + Sum)
 
     def forward(self, state):
         # state: (Batch, N * State_Per_UAV)
@@ -66,10 +66,12 @@ class DeepSetsEncoder(nn.Module):
         # 2. Local Encoding -> (Batch, N, Hidden)
         local_feat = self.local_encoder(state_reshaped)
         
-        # 3. Global Pooling -> (Batch, Hidden)
-        global_feat = torch.max(local_feat, dim=1)[0]
+        # 3. Global Pooling -> (Batch, 2*Hidden)
+        global_max = torch.max(local_feat, dim=1)[0]
+        global_sum = torch.sum(local_feat, dim=1)
+        global_feat = torch.cat([global_max, global_sum], dim=1)
         
-        # 4. Fusion -> (Batch, N, 2*Hidden)
+        # 4. Fusion -> (Batch, N, 3*Hidden)
         global_feat_expanded = global_feat.unsqueeze(1).expand(-1, self.num_uavs, -1)
         fused_feat = torch.cat([local_feat, global_feat_expanded], dim=2)
         

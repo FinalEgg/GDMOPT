@@ -31,7 +31,7 @@ def test_env_statistics():
     
     # 统计数据容器
     all_connection_counts = [] # 记录每个无人机的连接基站数量
-    all_baseline_rewards = []  # 记录每轮的基准奖励值（通过全0动作获得）
+    all_rewards = []  # 记录每轮的奖励值
     
     start_time = time.time()
     
@@ -39,51 +39,57 @@ def test_env_statistics():
         # 重置环境，随机生成无人机位置
         obs, _ = env.reset()
         
-        # 执行全0动作
-        # 在 FixTopPEnv 中，全0动作意味着模型分配功率为0。
-        # 但是环境内部会计算 Baseline（均分功率），奖励 = Actual(0) - Baseline
-        # 所以返回的 reward 即为 -BaselineScore
-        action = np.zeros(env.action_space.shape)
+        # 执行随机动作 (模拟 RL 探索)
+        # 动作范围 [0, 1]
+        action = np.random.uniform(0, 1, env.action_space.shape)
         
         _, reward, _, _, _ = env.step(action)
         
         # 1. 统计连接数
-        # env.top_p_mask 是 (M, N) 矩阵，1表示连接，0表示断开
+        # env.connection_matrix 是 (M, N) 矩阵，1表示连接，0表示断开
         # 对 axis=0 求和，得到每个 UAV 连接的基站数 (N,)
-        if hasattr(env, 'top_p_mask'):
-            conns_per_uav = np.sum(env.top_p_mask, axis=0)
+        if hasattr(env, 'connection_matrix'):
+            conns_per_uav = np.sum(env.connection_matrix, axis=0)
             all_connection_counts.extend(conns_per_uav)
         else:
-            print("警告: 环境中未找到 top_p_mask 属性，无法统计连接数。")
+            # print("警告: 环境中未找到 connection_matrix 属性，无法统计连接数。")
+            pass
             
-        # 2. 统计基准奖励
-        # reward = -Baseline, 所以 Baseline = -reward
-        all_baseline_rewards.append(-reward)
+        # 2. 统计奖励
+        all_rewards.append(reward)
         
     end_time = time.time()
     
     # 计算统计量
-    avg_conn = np.mean(all_connection_counts)
-    std_conn = np.std(all_connection_counts)
+    avg_conn = np.mean(all_connection_counts) if all_connection_counts else 0
+    std_conn = np.std(all_connection_counts) if all_connection_counts else 0
     
-    avg_reward = np.mean(all_baseline_rewards)
-    std_reward = np.std(all_baseline_rewards)
+    avg_reward = np.mean(all_rewards)
+    std_reward = np.std(all_rewards)
+    min_reward = np.min(all_rewards)
+    max_reward = np.max(all_rewards)
     
     print("\n---------------- 测试结果 ----------------")
     print(f"耗时: {end_time - start_time:.2f} 秒")
     print(f"总样本数 (UAV): {len(all_connection_counts)}")
-    print(f"总样本数 (Episode): {len(all_baseline_rewards)}")
+    print(f"总样本数 (Episode): {len(all_rewards)}")
     
     print("\n1. 无人机连接基站数量统计:")
     print(f"   平均连接数: {avg_conn:.4f}")
     print(f"   标准差 (Std): {std_conn:.4f}")
-    print(f"   最大连接数: {np.max(all_connection_counts)}")
-    print(f"   最小连接数: {np.min(all_connection_counts)}")
+    print(f"   最大连接数: {np.max(all_connection_counts) if all_connection_counts else 0}")
+    print(f"   最小连接数: {np.min(all_connection_counts) if all_connection_counts else 0}")
     
-    print("\n2. 基准奖励值统计 (均分功率):")
+    print("\n2. 奖励值统计 (随机功率):")
     print(f"   平均奖励: {avg_reward:.4f}")
     print(f"   标准差 (Std): {std_reward:.4f}")
-    print(f"   说明: 此值为基站将功率平均分配给连接用户时环境能获得的得分。")
+    print(f"   最大奖励: {max_reward:.4f}")
+    print(f"   最小奖励: {min_reward:.4f}")
+    
+    if min_reward < 0:
+        print(f"\n[警告] 检测到负奖励! 最小值为 {min_reward}")
+    else:
+        print(f"\n[正常] 所有奖励均为非负。")
     
     print("\n================ 测试结束 ================")
 

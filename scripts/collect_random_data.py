@@ -146,7 +146,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default=TrainConfig.ENV)
     parser.add_argument('--action-mode', type=str, default=TrainConfig.ACTION_MODE)
-    parser.add_argument('--steps', type=int, default=int(TrainConfig.PRETRAIN_CRITIC_STEPS))
+    parser.add_argument('--steps', type=int, default=int(TrainConfig.WARMUP_STEPS))
     parser.add_argument('--logdir', type=str, default=TrainConfig.LOGDIR)
     parser.add_argument('--num-envs', type=int, default=10, help="Number of parallel environments")
     

@@ -59,7 +59,7 @@ class DeepSetsCritic(nn.Module):
         )
         
         self.head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(hidden_dim * 3, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
@@ -83,30 +83,13 @@ class DeepSetsCritic(nn.Module):
         combined = torch.cat([state_reshaped, action_reshaped], dim=2)
         
         local_feat = self.local_encoder(combined)
-        global_feat = torch.max(local_feat, dim=1)[0] # (B, Hidden)
         
-        # For Critic, we usually want a single Q value for the whole state-action pair.
-        # So we can just use the global feature?
-        # Or we can do fusion and then sum/mean?
-        # Let's use global feature + sum of local?
+        # Global Pooling (Max + Sum)
+        global_max = torch.max(local_feat, dim=1)[0]
+        global_sum = torch.sum(local_feat, dim=1)
+        global_feat = torch.cat([global_max, global_sum], dim=1) # (B, 2*Hidden)
         
-        # DeepSets for set function: rho(sum(phi(x)))
-        # Here global_feat is max(phi(x)).
-        # We can also use sum.
-        
-        # Let's try: Global Pooling -> MLP -> Q
-        # But we need to mix local and global?
-        # If we want Q value, it's a scalar.
-        
-        # Let's do:
-        # Local -> Global (Max) -> MLP -> Q
-        # But we might lose detail.
-        
-        # Alternative:
-        # Local -> Global
-        # Fusion -> (B, N, 2H)
-        # MLP -> (B, N, 1) -> Sum -> Q
-        
+        # Fusion -> (B, N, 3*Hidden)
         global_expanded = global_feat.unsqueeze(1).expand(-1, self.num_uavs, -1)
         fused = torch.cat([local_feat, global_expanded], dim=2)
         
