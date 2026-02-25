@@ -1,163 +1,168 @@
-# GDMOPT：网络优化中的生成扩散模型
+# GDMOPT: 网络优化中的深度强化学习与生成模型框架
 
-包含：
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org/)
+[![Tianshou](https://img.shields.io/badge/Framework-Tianshou-green)](https://github.com/thu-ml/tianshou)
 
-- 训练脚本：DDPG / SAC / 生成扩散优化器（Diffusion）
-- Cell-free UAV 网络仿真可视化界面（Tkinter + Matplotlib）
-- 日志与权重管理
+**GDMOPT** 是一个模块化、高可扩展的科研实验框架，专为解决无线通信网络优化（如 Cell-Free 网络）及经典运筹优化问题而设计。该框架基于 **Tianshou** 深度强化学习库与 **PyTorch** 构建，集成了 TD3、DDPG、SAC 等主流 DRL 算法，并支持生成扩散模型（Diffusion Model）进行策略优化。
 
-主页/介绍页：见根目录 [index.html](index.html)
+核心特性：
+- **配置驱动（Config-Driven）**：一键切换算法、环境与网络结构。
+- **模块化设计**：环境（Env）、策略（Policy）、网络（Network）完全解耦。
+- **基准测试完备**：内置经典控制（Pendulum）、凸/非凸优化（Quadratic/Rastrigin）及 Cell-Free 通信场景。
+- **完善的日志管理**：自动化的日志路径生成、配置序列化保存及断点续训支持。
 
 ---
 
-## 1. 安装与环境（Windows / PowerShell）
+## 🏗️ 目录结构说明
 
-推荐使用 Python 3.9：
-
-除了requirement.txt之外，需要安装：
-torchaudio==2.4.1+cu124
-torchvision==0.19.1+cu124
-```cmd
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+GDMOPT/
+├── config/                  # [配置中心] 全局控制的核心
+│   ├── env_config.py        # 环境物理参数（如基站数量、功率限制、优化边界）
+│   ├── run_config.py        # 训练超参数（如 Epochs, LR, BatchSize, 算法选择）
+│   ├── mapping_config.py    # 实验注册表（将 Env, Wrapper, Model 绑定为实验 ID）
+│   └── model_config.py      # 模型细节配置（如层数、激活函数）
+│
+├── envs/                    # [环境层] 物理世界模拟
+│   ├── core/                # 核心物理引擎（如 channel.py 信道建模）
+│   ├── wrappers/            # Gymnasium 包装器（观测归一化、动作调整）
+│   ├── base_env.py          # Cell-Free 环境基类
+│   ├── cellfree_env.py      # 具体通信环境实现
+│   ├── optimization_env.py  # 数值优化基准环境 (Quadratic, Rastrigin)
+│   └── classic_env.py       # 经典控制环境包装 (CartPole, Pendulum)
+│
+├── networks/                # [网络层] 神经网络工厂
+│   ├── blocks/              # 基础模块 (MLP, DeepSets, GAT)
+│   ├── wrappers/            # 此处的 Wrapper 指网络输出头 (Deterministic/Stochastic Head)
+│   └── factory.py           # ModelFactory，根据配置组装 Actor/Critic
+│
+├── policies/                # [策略层] RL 算法定制
+│   ├── custom_ddpg.py       # 定制 DDPG (支持稀疏性约束等)
+│   ├── custom_td3.py        # 定制 TD3
+│   └── custom_sac.py        # 定制 SAC
+│
+├── scripts/                 # [执行层] 脚本与入口
+│   ├── train_model.py       # 通用训练入口函数
+│   ├── usr_script/          # 用户实验脚本 (推荐在此运行实验)
+│   │   ├── run_optimization_benchmark.py  # 凸优化基准测试
+│   │   ├── run_nonconvex_benchmark.py     # 非凸优化(Rastrigin)测试
+│   │   └── run_pendulum_benchmark.py      # 倒立摆(多步决策)测试
+│   └── utils/               # 工具库
+│       ├── config_manager.py # 配置序列化与路径生成
+│       └── setup.py          # 环境与策略的工厂组装逻辑
+│
+└── log/                     # [日志层] 自动生成的实验记录
+    └── {EnvName}/           # 按环境分类
+        └── {Algo_Backbone}/ # 按算法和网络分类
+            └── {Time_Tag}/  # 具体运行实例 (含 Checkpoints, TensorBoard, config.json)
 ```
 
 ---
 
-## 2. 训练（含 cell-free 环境）
+## 🚀 快速上手
 
-三个训练脚本均支持 `--env` 选择：`pendulum`、`optimization`、`cellfree`。为了与仿真界面联动，请使用 `cellfree` 环境训练，权重将保存在：
-
-```
-log/<log_prefix>/<algorithm>/cellfree/<timestamp>/policy.pth
-```
-
-示例（在仓库根目录运行）：
-
-```powershell
-# DDPG（Cell-free）
-python script\train_ddpg.py --env cellfree --epoch 10 --training-num 1 --test-num 1
-
-# SAC（Cell-free）
-python script\train_sac.py --env cellfree --epoch 10 --training-num 1 --test-num 1
-
-# Diffusion 优化器（Cell-free）
-python script\train_diffusion.py --env cellfree --epoch 10 --training-num 1 --test-num 1
+### 1. 环境准备
+确保已安装 Python 3.9+ 及 PyTorch。
+```bash
+# 安装依赖
+pip install -r requirements.txt
 ```
 
-说明：
+### 2. 运行基准测试
+框架内置了多种场景的自动化运行脚本。
 
-- 三个脚本默认 `--log-prefix default`，因此日志根路径为 `log/default/...`。
-- Diffusion 的脚本算法名为 `diffusion_opt`，其日志目录为 `log/default/diffusion_opt/...`。
+**场景 A：非凸函数优化 (Rastrigin)**
+测试模型寻找全局最优解的能力，考察探索性。
+```bash
+python scripts/usr_script/run_nonconvex_benchmark.py
+```
+*此脚本将自动测试 TD3, DDPG, SAC 三种算法在 Rastrigin 函数上的表现。*
 
----
-
-## 3. 仿真可视化（Simulation GUI）
-
-运行：
-
-```powershell
-python script\simulation\simulation.py
+**场景 B：经典多步控制 (Pendulum)**
+测试模型在时序关联任务中的长期规划能力（Gamma = 0.99）。
+```bash
+python scripts/usr_script/run_pendulum_benchmark.py
 ```
 
-界面功能：
+**场景 C：简单凸优化 (Quadratic)**
+验证算法收敛性的基础测试。
+```bash
+python scripts/usr_script/run_optimization_benchmark.py
+```
 
-- 模型下拉：`ddpg` / `sac` / `diffusion`
-- 权重下拉：在选择模型后自动扫描 `log/default/<model>/cellfree/**/policy.pth`
-- 开始/暂停按钮：启动/暂停仿真
-
-注意事项：
-
-- 为避免参数不匹配，仿真只读取 cell-free 环境下训练得到的权重。
-- 目前 Diffusion 的训练目录名为 `diffusion_opt`，如在仿真中选择 `diffusion` 请确保对应目录存在或调整代码以匹配目录名。
-- 界面关闭时程序会自动退出。
-
-可视化细节：
-
-- 每架无人机自动分配不同颜色；起飞同时以相同颜色虚线标注其规划路线。
-- 基站以蓝色三角标记，充电站以黄色方块标记，起点为绿色，终点为红色。
-- 若加载了模型，将绘制无人机与基站的连接强度（阈值显示）。
-
-安全加载：
-
-- 仿真中的模型加载使用 `torch.load(..., weights_only=True)`，建议使用较新的 PyTorch 版本。
-
----
-
-## 4. 日志与可视化
-
-日志/权重保存路径示例：
-
-- DDPG（cellfree）：`log/default/ddpg/cellfree/<timestamp>/policy.pth`
-- SAC（cellfree）：`log/default/sac/cellfree/<timestamp>/policy.pth`
-- Diffusion（cellfree）：`log/default/diffusion_opt/cellfree/<timestamp>/...`
-
-如需 TensorBoard：
-
-```powershell
-tensorboard --logdir log
+### 3. 自定义训练
+如果不使用 benchmark 脚本，可以直接 modify `config/run_config.py`，然后运行：
+```bash
+python scripts/train_model.py
 ```
 
 ---
 
-## 5. 代码结构（摘录）
+## ⚙️ 配置系统详解
 
-- 训练脚本：
-  - `script/train_ddpg.py`
-  - `script/train_sac.py`
-  - `script/train_diffusion.py`
-- 仿真：
-  - `script/simulation/simulation.py`（GUI 主程序）
-  - `script/simulation/model_prediction.py`（模型加载与推理）
-  - `script/simulation/drone_path.py`（路径规划示例）
-  - `script/simulation/sim_config.py`（仿真参数）
-- 环境：
-  - `env/cellfree/env.py`（Gymnasium 环境实现，`make_cellfree_env`）
-  - 其他环境：`env/pendulum`、`env/optimization`、`env/aigc`
-- 策略与模型：
-  - 策略：`policy/ddpg`、`policy/sac`、`policy/diffusion_opt`
-  - 模型：`model/actor.py`、`model/sac/`、`model/diffusion/`
+本框架的核心在于 `config/` 目录下的三个文件。
 
----
+### 1. 定义物理世界 (`env_config.py`)
+修改环境参数，例如优化问题的维度或通信网络的规模。
+```python
+# config/env_config.py
+OPT_DIM = 2        # 优化变量维度
+M = 10             # 基站数量
+STEPS_PER_EPISODE = 200
+```
 
-## 6. 常见问题（FAQ）
-
-1) Gym 警告/不兼容：
-
-   - 使用 Gymnasium：`pip install gymnasium`；卸载旧 gym：`pip uninstall -y gym`。
-2) 权重下拉为空或加载失败：
-
-   - 确认已使用 `--env cellfree` 训练，并产生 `policy.pth`。
-   - 确认目录为：`log/default/<model>/cellfree/**/policy.pth`。
-3) 关闭窗口程序未退出：
-
-   - 已在仿真中绑定关闭事件并退出主循环，可直接关闭窗口结束程序。
-4) NumPy 类型错误（dtype cast）：
-
-   - 仿真中已统一为浮点坐标；如修改代码，请确保位置与增量运算使用浮点类型。
-5) PyTorch 安全加载提示：
-
-   - 我们使用 `weights_only=True`，建议使用新版本 PyTorch；如遇兼容问题可降级为常规 `torch.load(path, map_location=...)`。
-
----
-
-## 7. 引用
-
-如本项目或教程对您的研究有帮助，请引用：
-
-```bibtex
-@article{du2023beyond,
-  title={Beyond deep reinforcement learning: A tutorial on generative diffusion models in network optimization},
-  author={Du, Hongyang and Zhang, Ruichen and Liu, Yinqiu and Wang, Jiacheng and Lin, Yijing and Li, Zonghang and Niyato, Dusit and Kang, Jiawen and Xiong, Zehui and Cui, Shuguang and Ai, Bo and Zhou, Haibo and Kim, Dong In},
-  journal={arXiv preprint arXiv:2308.05384},
-  year={2023}
+### 2. 注册实验组合 (`mapping_config.py`)
+将 `Environment` + `Wrapper` + `Model` 组合成一个 `EXPERIMENT_ID`。
+```python
+# config/mapping_config.py
+"exp_optimization_nonconvex": {
+    "env_id": "rastrigin",   # 指向 RastriginEnv
+    "wrapper_id": "none",    # 不使用观测包装器
+    "model_id": "baseline"   # 使用基础 MLP 网络
 }
 ```
 
+### 3. 控制训练流程 (`run_config.py`)
+选择算法、设置训练时长和超参数。
+```python
+# config/run_config.py
+EXPERIMENT_ID = 'exp_optimization_nonconvex' # 选择上面定义的实验
+ALGO = 'td3'                                 # 选择算法
+EPOCH = 50                                   # 训练轮数
+```
+
 ---
 
-## 8. 许可证
+## 📊 日志与结果
 
-- 网页模板与页面版权：见 [index.html](index.html) 页脚（CC BY-SA 4.0 元素）。
-- 代码许可：后续补充。
+训练启动后，系统会在 `log/` 目录下自动生成结构化的文件夹：
+```
+log/rastrigin/td3_mlp/20260225_143000_benchmark_dim2/
+├── config.json              # 记录本次运行的完整配置副本
+├── events.out.tfevents...   # TensorBoard 训练曲线
+├── checkpoint.pth           # 最新模型权重 (每 Epoch 保存)
+└── policy_best.pth          # 最佳模型权重 (测试集得分最高时保存)
+```
+
+**查看训练曲线：**
+```bash
+tensorboard --logdir log
+```
+
+**断点续训：**
+`train_model.py` 支持 `resume_from_log` 参数。若指定目录，系统将自动加载 `checkpoint.pth` 恢复训练状态。在 User Script 中，默认行为是创建新实验（`None`），如需续训请修改脚本入参。
 
 ---
+
+## 🛠️ 高级功能
+
+### 网络工厂 (Factory)
+在 `networks/factory.py` 中，我们使用工厂模式动态构建网络。
+支持以下骨干网络 (Backbone)：
+- `mlp`: 标准多层感知机。
+- `deepsets`: 具有置换不变性的集合网络，适合处理无序的基站/用户集合。
+- `gnn`: 图神经网络 (待完善)。
+
+### 算法扩展
+在 `policies/` 目录下，我们继承 Tianshou 的策略类实现了 `CustomDDPG`, `CustomTD3` 等，允许注入自定义逻辑（如稀疏性正则化 Loss）。

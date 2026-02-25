@@ -4,38 +4,60 @@ import numpy as np
 
 class OptimizationEnv(gym.Env):
     """
-    Base class for optimization environments.
-    State: Current position x (dim,)
-    Action: Delta x (dim,) scaled by step_size
-    Reward: -f(x) or improvement
+    Optimization Benchmark Base Class.
+    通用优化基准环境基类。
+    
+    Logic (逻辑):
+    - State: Current parameters 'x' (dim,) (当前解向量).
+    - Action: Update direction 'delta_x' (dim,) (更新步长).
+    - Reward: Negative objective function value '-f(x)' (目标函数负值).
+    - Goal: Find global minimum of f(x) (寻找最小值).
+    
+    Attributes:
+    - dim (int): Dimension of the problem (维度).
+    - max_steps (int): Max iterations (最大迭代次数).
+    - bounds (float): Search space bounds (搜索空间边界).
     """
-    def __init__(self, dim=2, max_steps=100, bounds=10.0):
-        self.dim = dim
-        self.max_steps = max_steps
-        self.bounds = bounds
+    def __init__(self, config):
+        if hasattr(config, 'OPT_DIM'):
+            self.dim = config.OPT_DIM
+            self.max_steps = config.STEPS_PER_EPISODE
+            self.bounds = config.OPT_BOUNDS
+        else:
+            # Fallback defaults if config is missing attributes
+            self.dim = 2
+            self.max_steps = 100
+            self.bounds = 10.0
+            
         self._num_steps = 0
         
-        self.observation_space = Box(low=-bounds, high=bounds, shape=(dim,), dtype=np.float32)
-        self.action_space = Box(low=-1.0, high=1.0, shape=(dim,), dtype=np.float32)
+        self.observation_space = Box(low=-self.bounds, high=self.bounds, shape=(self.dim,), dtype=np.float32)
+        self.action_space = Box(low=-1.0, high=1.0, shape=(self.dim,), dtype=np.float32)
         
-        self.state = np.zeros(dim)
+        self.state = np.zeros(self.dim)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._num_steps = 0
-        # Random start
+        # Random start (随机初始化起点)
         self.state = np.random.uniform(-self.bounds/2, self.bounds/2, self.dim)
         return self.state, {}
 
     def step(self, action):
+        """
+        Apply gradient-like update.
+        应用类梯度更新。
+        """
         self._num_steps += 1
         
-        # Action is delta, scaled
+        # Action is delta, scaled (动作即为更新增量)
         step_size = 0.5
         delta = action * step_size
         
+        # Update state with clipping (更新并裁剪边界)
         self.state = np.clip(self.state + delta, -self.bounds, self.bounds)
         
+        # Calculate Reward (Negative Cost)
         reward = self._calculate_reward()
         
         terminated = False
@@ -44,12 +66,16 @@ class OptimizationEnv(gym.Env):
         return self.state, reward, terminated, truncated, {}
 
     def _calculate_reward(self):
+        """Abstract method for objective function."""
         raise NotImplementedError
 
 class QuadraticEnv(OptimizationEnv):
     """
-    Convex function: f(x) = sum(x^2)
-    Global minimum at 0.
+    Quadratic Convex Function (Sphere Function).
+    二次凸函数环境 (球函数)。
+    
+    f(x) = sum(x^2)
+    Global minimum: 0 at x=[0,0,...]
     """
     def _calculate_reward(self):
         # Minimize f(x) -> Maximize -f(x)
@@ -58,9 +84,12 @@ class QuadraticEnv(OptimizationEnv):
 
 class RastriginEnv(OptimizationEnv):
     """
-    Non-convex function: Rastrigin
+    Rastrigin Non-Convex Function.
+    Rastrigin 非凸函数环境。
+    
     f(x) = 10n + sum(x^2 - 10cos(2pi*x))
-    Global minimum at 0.
+    Global minimum: 0 at x=[0,0,...]
+    Many local minima (多局部最优).
     """
     def _calculate_reward(self):
         A = 10

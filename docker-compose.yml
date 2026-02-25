@@ -1,0 +1,41 @@
+# 使用 Docker Compose 编排服务
+# 在当前目录下直接运行 'docker-compose up -d' 启动
+services:
+  train:
+    build: .
+    # 添加 --gpus all 需要 docker-compose v2.10+ 或 nvidia-docker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      # 挂载代码目录，方便调试时直接修改文件
+      - .:/app
+      # 挂载日志目录，确保持久化
+      - ./log:/app/log
+    environment:
+      # 在这里覆盖环境变量或 config
+      - RUN_ID=docker_test_v1
+    command: python scripts/train_model.py
+    # 限制内存等资源 (可选)
+    # mem_limit: 16g
+
+  benchmark:
+    build: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - .:/app
+      - ./log:/app/log
+    environment:
+      - RUN_ID=docker_full_benchmark
+    command: bash scripts/run_all_benchmarks.sh
+

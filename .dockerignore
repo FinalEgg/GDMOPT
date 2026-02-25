@@ -1,0 +1,25 @@
+# Docker 构建时排除的目录和文件
+.git/
+.vscode/
+
+# 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 日志和数据 (通常挂载，不需要打包)
+log/
+*.log
+tfevents.*
+
+# 本地虚拟环境
+venv/
+env/
+.env/
+gdmopt/
+
+# 编译生成
+build/
+dist/
+*.egg-info/
